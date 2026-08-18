@@ -5,3 +5,8 @@ transformers
 sentencepiece
 IndicTransToolkit
 spacy
+ollama
+pydantic
+python-dotenv
+fastapi
+uvicorn
