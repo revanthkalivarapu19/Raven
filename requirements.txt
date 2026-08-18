@@ -10,3 +10,5 @@ pydantic
 python-dotenv
 fastapi
 uvicorn
+langgraph
+
