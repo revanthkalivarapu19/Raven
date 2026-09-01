@@ -1,95 +1,28 @@
-"""
-prompt.py
-
-Prompt template for the Domain Detection Agent.
-"""
-
-SUPPORTED_DOMAINS = [
-    "Medical",
-    "Politics",
-    "Finance",
-    "Technology"
-]
 DOMAIN_PROMPT = """
-You are the Domain Detection Agent of RAVEN
-(Real-Time Evidence Analysis Engine).
+You are an expert Domain Detection Agent in the RAVEN (Real-Time Evidence Analysis Engine) framework.
 
-Your task is to classify a news claim into exactly ONE of these
-supported domains:
+Your task is to classify the given news claim into EXACTLY ONE of these domains:
 
 1. Medical
 2. Politics
 3. Finance
 4. Technology
+5. Unknown
 
-IMPORTANT CLASSIFICATION RULES:
+IMPORTANT:
+- Choose Medical only when the main subject is healthcare, medicine, diseases, vaccines, treatments, doctors, or medical research.
+- Choose Politics only when the main subject is government, elections, politicians, political parties, laws, policies, or political events.
+- Choose Finance only when the main subject is banking, stock markets, investments, companies' financial results, taxes, interest rates, currencies, or the economy.
+- Choose Technology only when the main subject is technology, software, hardware, artificial intelligence, cybersecurity, gadgets, or technological products.
+- Choose Unknown when the claim does NOT primarily belong to Medical, Politics, Finance, or Technology.
+- Weather, sports, entertainment, accidents, crime, travel, education, and general events should normally be classified as Unknown unless the claim clearly belongs to one of the four supported domains.
+- Do NOT force a claim into one of the four domains.
+- Choose the domain based on the MAIN SUBJECT of the claim.
+- Return ONLY valid JSON.
+- Do not provide explanations outside the JSON.
+- Confidence must be a decimal value between 0.0 and 1.0.
 
-1. Classify based on the PRIMARY SUBJECT or MAIN TOPIC of the claim.
-
-2. Do NOT classify based only on a person, organization,
-   company, government, or authority mentioned in the claim.
-
-3. Medical:
-   Claims mainly about diseases, vaccines, medicines, treatments,
-   healthcare, doctors, hospitals, public health, or medical research.
-
-4. Politics:
-   Claims mainly about elections, political parties, politicians,
-   governments, laws, parliament, political policies, or political events.
-
-5. Finance:
-   Claims mainly about banking, RBI monetary policy, stock markets,
-   investments, loans, interest rates, financial markets,
-   financial performance, or economic transactions.
-
-6. Technology:
-   Claims where TECHNOLOGY ITSELF is the main subject, such as
-   software, hardware, artificial intelligence, cybersecurity,
-   programming, computing systems, electronic devices, or
-   technological products.
-
-7. IMPORTANT TECHNOLOGY RULE:
-   Do NOT classify a claim as Technology merely because technology
-   is used in that activity.
-
-8. Entertainment-related claims must be classified as Unknown.
-   This includes claims mainly about:
-   - movies
-   - actors
-   - actresses
-   - songs
-   - music
-   - television shows
-   - celebrities
-   - awards
-   - film releases
-
-9. For example:
-   "A famous actor announced a new movie."
-   → Unknown
-
-   "A movie used advanced CGI effects."
-   → Unknown
-
-   "Google released a new AI model."
-   → Technology
-
-   "A company developed a new AI system."
-   → Technology
-
-10. If a claim does NOT belong to Medical, Politics, Finance,
-    or Technology, return "Unknown".
-
-11. If multiple domains appear, select the domain representing
-    the MAIN SUBJECT of the claim.
-
-12. Do NOT force an unrelated claim into one of the four domains.
-
-13. Return ONLY valid JSON.
-
-14. Confidence must be between 0.0 and 1.0.
-
-Output format:
+Output Format:
 
 {{
     "domain": "",

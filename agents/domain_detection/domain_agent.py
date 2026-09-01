@@ -7,9 +7,9 @@ Domain Detection Agent for the RAVEN Framework.
 import ollama
 from loguru import logger
 
-from prompt import DOMAIN_PROMPT
-from parser import parse_response
-from validator import validate_response
+from .prompt import DOMAIN_PROMPT
+from .parser import parse_response
+from .validator import validate_response
 
 
 class DomainDetectionAgent:
