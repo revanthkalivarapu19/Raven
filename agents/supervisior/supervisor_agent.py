@@ -58,7 +58,10 @@ def run_supervisor(supervisor_input: dict, max_retries: int = 2) -> dict:
         try:
             logger.info(f"Attempt {attempt + 1}/{max_retries + 1} for Supervisor Agent.")
             raw_response = call_supervisor_llm(prompt)
-            output = parse_supervisor_output(raw_response)
+            output = parse_supervisor_output(
+                raw_response,
+                evidence_list=supervisor_input.get("evidence_list")
+            )
             logger.info("Successfully parsed LLM response.")
             if hasattr(output, 'model_dump'):
                 return output.model_dump()
