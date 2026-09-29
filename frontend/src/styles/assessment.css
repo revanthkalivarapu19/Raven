@@ -1,0 +1,288 @@
+/* RAVEN — the verdict block
+   ------------------------------------------------------------------
+   The centrepiece of an answer. No card, no tint, no glow: one word at
+   display size in the verdict colour, a hairline, then the reading — a ring
+   for confidence and a hairline legend for how the sources line up. */
+
+.assessment {
+  --verdict-accent: var(--ink-primary);
+  margin-bottom: var(--space-6);
+}
+
+.assessment--real {
+  --verdict-accent: var(--verdict-real);
+}
+
+.assessment--fake {
+  --verdict-accent: var(--verdict-fake);
+}
+
+.assessment--unverified {
+  --verdict-accent: var(--verdict-unverified);
+}
+
+/* ---- The verdict word ---- */
+.assessment__head {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--rule-strong);
+}
+
+.assessment__verdict {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  margin-top: var(--space-3);
+}
+
+.assessment__word {
+  display: flex;
+  align-items: center;
+  gap: 0.34em;
+  font-family: var(--font-display);
+  font-size: clamp(2.5rem, 5.4vw, 3.75rem);
+  font-weight: 400;
+  line-height: 0.98;
+  letter-spacing: var(--tracking-hero);
+  color: var(--verdict-accent);
+}
+
+.assessment__word .dot {
+  width: 0.19em;
+  height: 0.19em;
+}
+
+/* The lead is rendered by this block, so it takes the spacing of the head. */
+.assessment__lead {
+  margin-top: var(--space-4);
+  margin-bottom: 0;
+}
+
+/* The stance is the sentence the verdict word is short for, so it is set in
+   the display serif rather than UI sans — it belongs to the headline, not to
+   the interface chrome. */
+.assessment__stance {
+  font-family: var(--font-display);
+  font-size: clamp(1.125rem, 1.6vw, 1.375rem);
+  line-height: 1.3;
+  letter-spacing: var(--tracking-tight);
+  color: var(--ink-secondary);
+  max-width: 30ch;
+}
+
+/* ==================================================================
+   Confidence — the ring, and what it says in words
+   ================================================================== */
+.assessment__reading {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-5);
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--rule-faint);
+}
+
+.assessment__reading-body {
+  min-width: 0;
+}
+
+.assessment__level {
+  font-family: var(--font-display);
+  font-size: clamp(1.25rem, 2vw, 1.5rem);
+  line-height: 1.1;
+  letter-spacing: var(--tracking-tight);
+  color: var(--ink-primary);
+}
+
+.assessment__note {
+  margin-top: var(--space-2);
+  font-size: var(--text-small);
+  line-height: 1.6;
+  color: var(--ink-tertiary);
+  max-width: 46ch;
+}
+
+/* ==================================================================
+   The ring itself
+   ================================================================== */
+/* The ring reads `--verdict-accent` from the verdict block around it. It must
+   not *declare* that token itself — a declaration here would override the
+   value inherited from `.assessment--real` / `--fake` / `--unverified` and the
+   ring would quietly lose its verdict colour. The fallback lives in the
+   consuming declarations instead. */
+.ring {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--ring-size);
+  height: var(--ring-size);
+  flex: none;
+}
+
+.ring__svg {
+  display: block;
+  transform: rotate(-90deg);
+}
+
+.ring__track {
+  stroke: var(--rule);
+}
+
+/* Drawn, not switched on: the arc sweeps from empty to the reading as the
+   answer arrives, which is what makes the length of it legible as a number.
+   Reduced-motion readers get the finished ring immediately — the global
+   reduced-motion rule collapses the duration. */
+.ring__arc {
+  stroke: var(--verdict-accent, var(--ink-primary));
+  animation: ring-draw var(--duration-reveal) var(--ease-out);
+}
+
+@keyframes ring-draw {
+  from {
+    stroke-dashoffset: var(--ring-full);
+  }
+}
+
+.ring__centre {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+.ring__value {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  line-height: 1;
+  letter-spacing: var(--tracking-hero);
+  font-variant-numeric: tabular-nums;
+  color: var(--verdict-accent, var(--ink-primary));
+}
+
+/* ==================================================================
+   How the sources line up — a legend row, not a widget.
+   ================================================================== */
+.assessment__sources {
+  display: grid;
+  grid-template-columns: auto minmax(5rem, 1fr) auto;
+  align-items: center;
+  gap: var(--space-5);
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--rule-faint);
+}
+
+.assessment__balance {
+  display: flex;
+  gap: 3px;
+  height: 3px;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  background: var(--rule-faint);
+}
+
+.assessment__balance-part {
+  flex-basis: 0;
+  border-radius: var(--radius-pill);
+  background: var(--rule-strong);
+}
+
+.assessment__balance-part--supports {
+  background: var(--verdict-real);
+}
+
+.assessment__balance-part--contradicts {
+  background: var(--verdict-fake);
+}
+
+.assessment__balance-part--unclear {
+  background: var(--ink-quaternary);
+}
+
+.assessment__tally {
+  margin-top: 0;
+  max-width: none;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==================================================================
+   The claim as understood — set as a quoted reading, in italic display
+   type, so "their words" never blurs into "our finding".
+   ================================================================== */
+.assessment__claim {
+  margin-top: var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  background: var(--paper-tint);
+  border-left: 2px solid var(--rule-strong);
+  border-radius: var(--radius-xs);
+}
+
+.assessment__claim p {
+  margin-top: var(--space-2);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 1.25rem;
+  line-height: 1.35;
+  color: var(--ink-primary);
+  max-width: 46ch;
+}
+
+/* ==================================================================
+   Small screens
+   ================================================================== */
+@media (max-width: 900px) {
+  .assessment {
+    margin-bottom: var(--space-5);
+  }
+
+  .assessment__verdict {
+    display: block;
+  }
+
+  .assessment__word {
+    font-size: clamp(2.25rem, 11vw, 2.75rem);
+  }
+
+  .assessment__stance {
+    margin-top: var(--space-3);
+    max-width: none;
+  }
+
+  .assessment__reading {
+    gap: var(--space-4);
+  }
+
+  .assessment__note {
+    max-width: none;
+  }
+
+  /* The legend stacks: label, bar, then the tally underneath. */
+  .assessment__sources {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-3);
+  }
+
+  .assessment__tally {
+    text-align: left;
+  }
+
+  .assessment__claim {
+    padding: var(--space-4);
+  }
+
+  .assessment__claim p {
+    font-size: 1.125rem;
+  }
+}
+
+/* Very narrow phones: the ring sits above the reading rather than squeezing
+   the sentence into a ragged column. */
+@media (max-width: 26rem) {
+  .assessment__reading {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: start;
+    gap: var(--space-3);
+  }
+}

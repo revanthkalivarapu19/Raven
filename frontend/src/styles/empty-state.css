@@ -1,0 +1,101 @@
+/* RAVEN — empty state
+   The proposition, then three examples of what someone might bring. */
+
+.empty {
+  padding-bottom: var(--space-6);
+}
+
+.empty__examples {
+  margin-top: var(--space-8);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--rule);
+}
+
+.empty__examples-label {
+  display: block;
+  margin-bottom: var(--space-4);
+}
+
+.empty__list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Examples are set as a list of statements, divided by hairlines — closer to
+   a table of contents than a wall of cards. */
+.example {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-5);
+  width: 100%;
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--rule-faint);
+  text-align: left;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.empty__list li:first-child .example {
+  border-top: 0;
+}
+
+.example__text {
+  font-family: var(--font-display);
+  font-size: 1.125rem;
+  line-height: 1.4;
+  color: var(--ink-primary);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.example__detail {
+  flex: none;
+  font-size: var(--text-small);
+  color: var(--ink-tertiary);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.example:hover .example__text {
+  color: var(--accent);
+}
+
+.example:hover .example__detail {
+  color: var(--ink-secondary);
+}
+
+/* A quiet marker that slides in on hover, so the row reads as actionable. */
+.example__text::after {
+  content: '→';
+  display: inline-block;
+  margin-left: var(--space-2);
+  font-family: var(--font-sans);
+  font-size: 0.9em;
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-base) var(--ease-out);
+}
+
+.example:hover .example__text::after {
+  opacity: 0.7;
+  transform: translateX(0);
+}
+
+@media (max-width: 900px) {
+  .empty__examples {
+    margin-top: var(--space-7);
+  }
+
+  .example {
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .example__text {
+    font-size: 1.0625rem;
+  }
+
+  .example {
+    min-height: 3.25rem;
+    padding-block: var(--space-3);
+  }
+}

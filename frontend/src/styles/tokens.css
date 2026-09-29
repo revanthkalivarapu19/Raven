@@ -1,0 +1,211 @@
+/* RAVEN — design tokens
+   ------------------------------------------------------------------
+   Direction: "editorial evidence desk".
+   Warm paper, near-black ink, one cobalt accent, hairline rules,
+   serif display type against a quiet grotesk. Restrained on purpose:
+   almost no shadow, small radii, colour reserved for meaning.
+
+   Nothing in the app should hard-code a colour, size or duration.
+   Change a value here and the whole product follows.
+
+   Two themes live in this file. The light theme is the default set on
+   `:root`; the dark theme overrides *only* the semantic colour tokens in
+   `[data-theme='dark']` below. Type, space, radii, motion and layout are
+   theme-independent and are therefore declared once.
+   ------------------------------------------------------------------ */
+
+:root {
+  color-scheme: light;
+
+  /* ---- Typefaces ------------------------------------------------- */
+  --font-display: 'Instrument Serif', 'Iowan Old Style', 'Times New Roman', Georgia, serif;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* ---- Paper & ink ------------------------------------------------ */
+  --paper: #faf8f4;          /* app background, warm off-white */
+  --paper-raised: #ffffff;   /* surfaces that lift off the page */
+  --paper-sunken: #f1eee7;   /* inset wells, inactive fills */
+  --paper-tint: #f6f3ed;     /* very quiet fills */
+
+  /* The ink scale has four steps, and the two quiet ones are held to a
+     contrast floor rather than being picked by eye: tertiary carries real
+     reading text (notes, labels, folios) and stays above 4.5:1 on the paper,
+     while quaternary is reserved for marks that are genuinely supplemental —
+     row numbers, timestamps, the placeholder. */
+  --ink: #16150f;            /* primary text, warm near-black */
+  --ink-primary: #16150f;
+  --ink-secondary: #56514a;
+  --ink-tertiary: #6e6759;   /* ~5.2:1 on --paper */
+  --ink-quaternary: #857e72; /* ~3.8:1 — supplemental marks only */
+  --ink-inverse: #fbfaf7;
+  --ink-hover: #2b2921;      /* solid ink surfaces, on hover */
+
+  /* Hairlines. The main structural device of the whole interface. */
+  --rule: rgba(22, 21, 15, 0.11);
+  --rule-strong: rgba(22, 21, 15, 0.22);
+  --rule-faint: rgba(22, 21, 15, 0.055);
+
+  /* ---- Accent ----------------------------------------------------- */
+  /* One intelligent blue. Used for action, selection and focus only. */
+  --accent: #1b46d6;
+  --accent-deep: #1636a8;
+  --accent-soft: #e9edfc;
+  --accent-line: rgba(27, 70, 214, 0.26);
+  --accent-ink: #14318f;
+  --on-accent: #ffffff;      /* text that sits on --accent */
+  --focus-ring: rgba(27, 70, 214, 0.65);
+
+  /* ---- Verdicts --------------------------------------------------- */
+  /* Print-adjacent, not status-LED. Readable, never neon. */
+  --verdict-real: #1c6b48;
+  --verdict-real-soft: #e8f1ec;
+  --verdict-real-line: rgba(28, 107, 72, 0.26);
+
+  --verdict-fake: #a5341f;
+  --verdict-fake-soft: #faebe7;
+  --verdict-fake-line: rgba(165, 52, 31, 0.26);
+
+  --verdict-unverified: #8a6212;
+  --verdict-unverified-soft: #f8f2e1;
+  --verdict-unverified-line: rgba(138, 98, 18, 0.3);
+
+  /* ---- Type scale -------------------------------------------------
+     Fluid where it matters (display), fixed where predictability
+     matters (UI text). Display is tight and large; body is roomy. */
+  --text-hero: clamp(2.5rem, 6.2vw, 4.75rem);
+  --text-display: clamp(1.9rem, 3.6vw, 2.75rem);
+  --text-title: clamp(1.5rem, 2.4vw, 1.9rem);
+  --text-lead: 1.1875rem;
+  --text-body: 1.0625rem;      /* 17px — reading size for messages */
+  --text-ui: 0.9375rem;
+  --text-small: 0.8125rem;
+  --text-micro: 0.6875rem;     /* mono folios and labels */
+
+  --leading-hero: 1.02;
+  --leading-tight: 1.14;
+  --leading-snug: 1.32;
+  --leading-body: 1.62;
+  --leading-loose: 1.72;
+
+  --tracking-hero: -0.022em;
+  --tracking-tight: -0.014em;
+  --tracking-normal: 0;
+  --tracking-label: 0.11em;
+
+  /* ---- Space scale (4px base, editorial jumps at the top end) ----- */
+  --space-1: 0.25rem;   /*  4 */
+  --space-2: 0.5rem;    /*  8 */
+  --space-3: 0.75rem;   /* 12 */
+  --space-4: 1rem;      /* 16 */
+  --space-5: 1.5rem;    /* 24 */
+  --space-6: 2rem;      /* 32 */
+  --space-7: 2.5rem;    /* 40 */
+  --space-8: 3.25rem;   /* 52 */
+  --space-9: 4.5rem;    /* 72 */
+  --space-10: 6.5rem;   /* 104 */
+
+  /* ---- Radii ------------------------------------------------------ */
+  /* Small on purpose. Paper, not bubble-gum. */
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 9px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+
+  /* ---- Shadow ----------------------------------------------------- */
+  /* Barely there. Depth comes from rules and paper shifts, not glow. */
+  --shadow-flat: 0 1px 1px rgba(22, 21, 15, 0.03);
+  --shadow-raised: 0 1px 2px rgba(22, 21, 15, 0.05), 0 8px 24px -18px rgba(22, 21, 15, 0.18);
+  --shadow-float: 0 2px 4px rgba(22, 21, 15, 0.04), 0 18px 44px -22px rgba(22, 21, 15, 0.24);
+
+  /* ---- Overlays ---------------------------------------------------- */
+  --scrim: rgba(22, 21, 15, 0.28);       /* behind the About sheet */
+  --scrim-strong: rgba(22, 21, 15, 0.88); /* behind a zoomed image */
+
+  /* ---- Motion ----------------------------------------------------- */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.5, 0, 0.15, 1);
+  --ease-spring: cubic-bezier(0.34, 1.3, 0.5, 1);
+  --duration-instant: 90ms;
+  --duration-fast: 150ms;
+  --duration-base: 240ms;
+  --duration-slow: 420ms;
+  --duration-reveal: 620ms;
+
+  /* ---- Layout ----------------------------------------------------- */
+  --shell-max: 80rem;
+  --column: 46rem;          /* the conversation measure */
+  --column-narrow: 34rem;
+  --gutter: clamp(1.25rem, 4.5vw, 4rem);
+  --header-height: 4.75rem;
+
+  /* ---- Layers ----------------------------------------------------- */
+  --z-base: 1;
+  --z-sticky: 10;
+  --z-composer: 20;
+  --z-overlay: 40;
+  --z-toast: 60;
+}
+
+/* ==================================================================
+   Dark theme
+   ------------------------------------------------------------------
+   Not an inversion. The paper goes to a warm near-black rather than grey,
+   the accent is *lifted* (a cobalt dark enough to read on white is
+   unreadable on black), verdicts are re-mixed to hold their hue at lower
+   luminance, and depth still comes from hairlines — the shadows simply
+   stop pretending to be light.
+   ================================================================== */
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* Paper & ink — warm, not slate. */
+  --paper: #131211;
+  --paper-raised: #1c1b18;
+  --paper-sunken: #0d0c0b;
+  --paper-tint: #201f1b;
+
+  --ink: #f2efe7;
+  --ink-primary: #f2efe7;
+  --ink-secondary: #b4ada1;
+  --ink-tertiary: #9b9487;   /* ~6.2:1 on --paper */
+  --ink-quaternary: #7a7367; /* ~4.0:1 — supplemental marks only */
+  --ink-inverse: #131211;
+  --ink-hover: #ffffff;
+
+  --rule: rgba(242, 239, 231, 0.14);
+  --rule-strong: rgba(242, 239, 231, 0.30);
+  --rule-faint: rgba(242, 239, 231, 0.07);
+
+  /* The accent is a light source on dark paper, not a darker ink. */
+  --accent: #8098f0;
+  --accent-deep: #a3b4f7;
+  --accent-soft: rgba(128, 152, 240, 0.15);
+  --accent-line: rgba(128, 152, 240, 0.36);
+  --accent-ink: #c6d0ff;
+  --on-accent: #14130f;
+  --focus-ring: rgba(128, 152, 240, 0.78);
+
+  /* Verdicts, re-mixed for a dark ground. Same hues, read at distance. */
+  --verdict-real: #63c08e;
+  --verdict-real-soft: rgba(99, 192, 142, 0.14);
+  --verdict-real-line: rgba(99, 192, 142, 0.34);
+
+  --verdict-fake: #e58878;
+  --verdict-fake-soft: rgba(229, 136, 120, 0.14);
+  --verdict-fake-line: rgba(229, 136, 120, 0.34);
+
+  --verdict-unverified: #d3a94f;
+  --verdict-unverified-soft: rgba(211, 169, 79, 0.14);
+  --verdict-unverified-line: rgba(211, 169, 79, 0.36);
+
+  /* Depth on dark paper comes from rules; shadows only seat a floating
+     surface against the page. */
+  --shadow-flat: 0 1px 1px rgba(0, 0, 0, 0.4);
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px -18px rgba(0, 0, 0, 0.7);
+  --shadow-float: 0 2px 4px rgba(0, 0, 0, 0.45), 0 18px 44px -22px rgba(0, 0, 0, 0.8);
+
+  --scrim: rgba(0, 0, 0, 0.62);
+  --scrim-strong: rgba(0, 0, 0, 0.9);
+}

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#faf8f4" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      /*
+       * Theme, applied before the first paint so a dark-theme reader never
+       * sees a white flash. This is a deliberate duplicate of the boot step in
+       * src/lib/theme.js — that module cannot be imported this early, and the
+       * key and attribute below must stay in step with it.
+       */
+      ;(function () {
+        var KEY = 'raven:theme:v1'
+        try {
+          var stored = localStorage.getItem(KEY)
+          var theme =
+            stored === 'light' || stored === 'dark'
+              ? stored
+              : window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light'
+          document.documentElement.dataset.theme = theme
+          var meta = document.querySelector('meta[name="theme-color"]')
+          if (meta) meta.setAttribute('content', theme === 'dark' ? '#131211' : '#faf8f4')
+        } catch (error) {
+          document.documentElement.dataset.theme = 'light'
+        }
+      })()
+    </script>
+    <meta
+      name="description"
+      content="RAVEN — check a claim against the evidence. Ask a question, share a screenshot, and see what the sources actually say."
+    />
+    <title>RAVEN — Check a claim against the evidence</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:ital,opsz,wght@0,14..32,300..700;1,14..32,400&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

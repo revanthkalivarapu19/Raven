@@ -1,0 +1,214 @@
+/* RAVEN — internal design primitives review
+   Development aid, not part of the product. Reachable at #design. */
+
+.ds {
+  min-height: 100%;
+  overflow-y: auto;
+  background: var(--paper);
+  padding: var(--space-8) var(--gutter) var(--space-10);
+}
+
+.ds__inner {
+  max-width: 62rem;
+  margin: 0 auto;
+}
+
+.ds__masthead {
+  padding-bottom: var(--space-6);
+  border-bottom: 1px solid var(--rule-strong);
+  margin-bottom: var(--space-9);
+}
+
+.ds__masthead-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+}
+
+.ds__masthead h1 {
+  font-size: var(--text-display);
+  margin-block: var(--space-3) var(--space-2);
+}
+
+.ds__masthead code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  color: var(--ink-tertiary);
+}
+
+/* Confidence ring samples — the verdict modifier classes only supply the
+   accent colour the ring reads, so they are borrowed directly. */
+.ds__rings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+.ds__ring-sample {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.ds__ring-level {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  line-height: 1.15;
+  letter-spacing: var(--tracking-tight);
+  color: var(--ink-primary);
+}
+
+.ds__masthead p {
+  max-width: 40rem;
+  color: var(--ink-secondary);
+}
+
+.ds__section {
+  padding-top: var(--space-7);
+  margin-top: var(--space-7);
+  border-top: 1px solid var(--rule);
+}
+
+.ds__section > .folio {
+  margin-bottom: var(--space-5);
+}
+
+.ds__grid {
+  display: grid;
+  gap: var(--space-6);
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+}
+
+.ds__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.ds__stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.ds__note {
+  font-size: var(--text-small);
+  color: var(--ink-tertiary);
+}
+
+/* Swatches */
+.ds__swatch {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--paper-raised);
+}
+
+.ds__swatch-chip {
+  height: 3.5rem;
+}
+
+.ds__swatch-meta {
+  padding: var(--space-3);
+  border-top: 1px solid var(--rule);
+}
+
+.ds__swatch-meta code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  color: var(--ink-tertiary);
+  margin-top: 2px;
+}
+
+/* Type specimen */
+.ds__specimen {
+  border-bottom: 1px solid var(--rule-faint);
+  padding-block: var(--space-4);
+}
+
+.ds__specimen:first-child {
+  padding-top: 0;
+}
+
+.ds__specimen .folio {
+  margin-bottom: var(--space-2);
+}
+
+.ds__specimen-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+}
+
+.ds__specimen-row .ds__note {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+}
+
+/* Spacing ruler */
+.ds__ruler {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ds__ruler-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.ds__ruler-bar {
+  height: 10px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: 2px;
+}
+
+.ds__ruler-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  color: var(--ink-tertiary);
+  width: 5.5rem;
+  flex: none;
+}
+
+/* Verdict marks */
+.ds__verdict {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  background: var(--paper-raised);
+}
+
+.ds__verdict strong {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 400;
+  letter-spacing: var(--tracking-tight);
+}
+
+.ds__verdict--real {
+  color: var(--verdict-real);
+  background: var(--verdict-real-soft);
+  border-color: var(--verdict-real-line);
+}
+
+.ds__verdict--fake {
+  color: var(--verdict-fake);
+  background: var(--verdict-fake-soft);
+  border-color: var(--verdict-fake-line);
+}
+
+.ds__verdict--unverified {
+  color: var(--verdict-unverified);
+  background: var(--verdict-unverified-soft);
+  border-color: var(--verdict-unverified-line);
+}

@@ -1,0 +1,416 @@
+/* RAVEN — application shell
+   ------------------------------------------------------------------
+   A masthead rail on the left, one continuous workspace on the right.
+   The rail carries identity and the two or three things a user can do
+   besides checking a claim. Everything else is the conversation.
+   ------------------------------------------------------------------ */
+
+.shell {
+  display: grid;
+  grid-template-columns: 17.5rem minmax(0, 1fr);
+  height: 100%;
+  background: var(--paper);
+}
+
+/* ==================================================================
+   Rail — masthead on desktop, compact bar on small screens.
+   ================================================================== */
+.rail {
+  position: relative;
+  z-index: var(--z-sticky);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+  padding: var(--space-8) var(--space-6) var(--space-6);
+  background: var(--paper);
+  border-right: 1px solid var(--rule);
+  overflow-y: auto;
+}
+
+.rail__identity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.rail__statement {
+  max-width: 14rem;
+  font-size: var(--text-ui);
+  line-height: 1.5;
+  color: var(--ink-secondary);
+}
+
+/* ---- Navigation ---- */
+.rail__nav {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.rail__nav-item {
+  position: relative;
+  padding: var(--space-2) 0;
+  font-size: var(--text-ui);
+  line-height: 1.2;
+  color: var(--ink-secondary);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.rail__nav-item::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0.3rem;
+  height: 1px;
+  width: 0;
+  background: currentColor;
+  transition: width var(--duration-base) var(--ease-out);
+}
+
+.rail__nav-item:hover {
+  color: var(--ink-primary);
+}
+
+.rail__nav-item:hover::after,
+.rail__nav-item:focus-visible::after {
+  width: 100%;
+}
+
+.rail__nav-item--accent {
+  color: var(--accent);
+}
+
+/* ---- Footer ----
+   The theme switch, then an honest, quiet note about how to read RAVEN —
+   not marketing. */
+.rail__foot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin-top: auto;
+  max-width: 14rem;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--rule-faint);
+}
+
+.rail__foot-note {
+  font-size: var(--text-small);
+  line-height: 1.55;
+  color: var(--ink-tertiary);
+}
+
+/* ==================================================================
+   Workspace — one continuous surface: content scrolls, dock stays.
+   ================================================================== */
+.workspace {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.workspace__scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.workspace__column {
+  max-width: calc(var(--column) + var(--gutter) * 2);
+  margin-inline: auto;
+  padding: var(--space-8) var(--gutter) var(--space-7);
+}
+
+.workspace__column--centered {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.workspace__dock {
+  position: relative;
+  flex: none;
+  padding: var(--space-3) var(--gutter) calc(var(--space-5) + env(safe-area-inset-bottom, 0px));
+  background: var(--paper);
+}
+
+.workspace__dock-inner {
+  max-width: var(--column);
+  margin-inline: auto;
+}
+
+/* "Latest answer" — floats above the composer without displacing it. */
+.jump {
+  position: absolute;
+  top: -2.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0.375rem var(--space-3);
+  font-size: var(--text-small);
+  color: var(--ink-secondary);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-raised);
+  animation: turn-in var(--duration-base) var(--ease-out) both;
+  transition: color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.jump:hover {
+  color: var(--ink-primary);
+  border-color: var(--rule-strong);
+}
+
+/* ==================================================================
+   Wordmark — pure typography. No bird, no glyph, no glowing mark.
+   ================================================================== */
+.wordmark {
+  display: inline-block;
+  font-family: var(--font-display);
+  font-weight: 400;
+  line-height: 1;
+  text-transform: uppercase;
+  color: var(--ink-primary);
+  white-space: nowrap;
+}
+
+.wordmark--sm {
+  font-size: 1.0625rem;
+  letter-spacing: 0.15em;
+}
+
+.wordmark--md {
+  font-size: 1.625rem;
+  letter-spacing: 0.16em;
+}
+
+.wordmark--lg {
+  font-size: 2.25rem;
+  letter-spacing: 0.17em;
+}
+
+/* ==================================================================
+   About sheet — the only secondary surface in the product.
+   ================================================================== */
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--gutter);
+}
+
+.sheet__scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+  backdrop-filter: blur(1.5px);
+  animation: raven-fade var(--duration-base) var(--ease-out);
+}
+
+.sheet__panel {
+  position: relative;
+  width: min(34rem, 100%);
+  max-height: min(80vh, 44rem);
+  overflow-y: auto;
+  padding: var(--space-7) var(--space-7) var(--space-6);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-float);
+  animation: raven-sheet-in var(--duration-base) var(--ease-out);
+}
+
+.sheet__close {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+}
+
+.sheet__title {
+  font-family: var(--font-display);
+  font-size: var(--text-display);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  margin-bottom: var(--space-5);
+}
+
+.sheet__section {
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--rule-faint);
+}
+
+.sheet__section + .sheet__section {
+  margin-top: var(--space-5);
+}
+
+.sheet__section h3 {
+  font-family: var(--font-sans);
+  font-size: var(--text-ui);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tight);
+  margin-bottom: var(--space-2);
+}
+
+.sheet__section p {
+  font-size: var(--text-ui);
+  line-height: 1.6;
+  color: var(--ink-secondary);
+}
+
+.sheet__section p + p {
+  margin-top: var(--space-3);
+}
+
+.sheet__verdicts {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--space-3);
+}
+
+.sheet__verdict {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+  gap: var(--space-4);
+  padding-block: var(--space-3);
+  border-top: 1px solid var(--rule-faint);
+}
+
+.sheet__verdict dt {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-ui);
+  font-weight: 500;
+}
+
+.sheet__verdict dd {
+  font-size: var(--text-ui);
+  line-height: 1.6;
+  color: var(--ink-secondary);
+}
+
+.sheet__verdict--real dt {
+  color: var(--verdict-real);
+}
+
+.sheet__verdict--fake dt {
+  color: var(--verdict-fake);
+}
+
+.sheet__verdict--unverified dt {
+  color: var(--verdict-unverified);
+}
+
+@keyframes raven-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes raven-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.995);
+  }
+}
+
+/* ==================================================================
+   Small screens — the rail becomes a compact masthead bar.
+   ================================================================== */
+@media (max-width: 900px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .rail {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-3) var(--gutter);
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+    overflow: visible;
+  }
+
+  .rail__identity {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .rail__statement,
+  .rail__foot-note {
+    display: none;
+  }
+
+  /* The switch stays on a phone — it is a preference, not a desktop nicety. */
+  .rail__foot {
+    flex-direction: row;
+    align-items: center;
+    margin-top: 0;
+    max-width: none;
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  .rail__nav {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-4);
+    margin-left: auto;
+  }
+
+  .rail__nav-item {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.5rem;
+    padding: var(--space-1) 0;
+    font-size: var(--text-small);
+  }
+
+  .rail__nav-item::after {
+    bottom: 0;
+  }
+
+  .workspace__column {
+    padding-top: var(--space-6);
+  }
+
+  .workspace__dock {
+    padding-top: var(--space-2);
+  }
+
+  /* Dialog becomes a bottom sheet. */
+  .sheet {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .sheet__panel {
+    width: 100%;
+    max-height: 88vh;
+    padding: var(--space-6) var(--space-5) var(--space-5);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    animation: raven-sheet-up var(--duration-base) var(--ease-out);
+  }
+
+  @keyframes raven-sheet-up {
+    from {
+      transform: translateY(3%);
+      opacity: 0.4;
+    }
+  }
+}

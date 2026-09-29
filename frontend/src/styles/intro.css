@@ -1,0 +1,29 @@
+/* RAVEN — intro statement
+   The product's opening line. Deliberately huge, deliberately alone. */
+
+.intro {
+  padding-block: var(--space-5);
+}
+
+.intro__title {
+  max-width: 19ch;
+  margin-top: var(--space-5);
+}
+
+.intro__lead {
+  max-width: 33rem;
+  margin-top: var(--space-5);
+  font-size: var(--text-lead);
+  line-height: 1.58;
+  color: var(--ink-secondary);
+}
+
+@media (max-width: 900px) {
+  .intro__title {
+    max-width: 16ch;
+  }
+
+  .intro__lead {
+    font-size: var(--text-body);
+  }
+}

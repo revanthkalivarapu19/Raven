@@ -1,0 +1,311 @@
+/* RAVEN — conversation
+   ------------------------------------------------------------------
+   Not a chat log. A sequence of documents: the claim as a pull-quote, the
+   answer as prose, with one hairline used as the speaker line. */
+
+.conversation {
+  display: flex;
+  flex-direction: column;
+}
+
+.turn {
+  animation: turn-in var(--duration-reveal) var(--ease-out) both;
+}
+
+@keyframes turn-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+}
+
+/* ==================================================================
+   A turn from the user — the claim under examination.
+   ================================================================== */
+.turn--you {
+  padding-left: var(--space-5);
+  border-left: 1px solid var(--rule-strong);
+  margin-bottom: var(--space-7);
+}
+
+.turn--you .turn__meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+}
+
+.turn--you .turn__claim {
+  max-width: 42ch;
+  font-family: var(--font-display);
+  font-size: clamp(1.375rem, 2.3vw, 1.8125rem);
+  line-height: 1.26;
+  letter-spacing: var(--tracking-tight);
+  color: var(--ink-primary);
+  text-wrap: pretty;
+}
+
+/* A pasted paragraph would be a wall in display type. */
+.turn--you .turn__claim--long {
+  font-size: clamp(1.0625rem, 1.5vw, 1.1875rem);
+  line-height: 1.55;
+  letter-spacing: 0;
+  max-width: 46ch;
+}
+
+.turn__time {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  letter-spacing: 0.04em;
+  color: var(--ink-quaternary);
+}
+
+/* ==================================================================
+   A turn from RAVEN.
+   ================================================================== */
+.turn--raven {
+  margin-bottom: var(--space-8);
+}
+
+.turn--raven:last-child {
+  margin-bottom: var(--space-5);
+}
+
+.turn__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+.turn__head .wordmark {
+  color: var(--ink-tertiary);
+}
+
+.turn__rule {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--rule-faint);
+}
+
+/* RAVEN's opening line. Display serif, because it is a statement of finding
+   rather than interface text — it sits with the verdict word, not with the
+   interface around it. */
+.turn__lead {
+  font-family: var(--font-display);
+  font-size: clamp(1.1875rem, 1.8vw, 1.375rem);
+  line-height: 1.38;
+  letter-spacing: var(--tracking-tight);
+  color: var(--ink-primary);
+  max-width: 34ch;
+  margin-bottom: var(--space-4);
+}
+
+/* ==================================================================
+   The explanation — a labelled, readable account of the reasoning.
+   The label is what stops three paragraphs of prose reading as an
+   undifferentiated block.
+   ================================================================== */
+.explanation {
+  margin-bottom: var(--space-2);
+}
+
+.explanation__label {
+  display: block;
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--rule-faint);
+}
+
+.turn__prose {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 40rem;
+}
+
+.turn__prose p {
+  font-size: var(--text-body);
+  line-height: var(--leading-loose);
+  color: var(--ink-secondary);
+}
+
+.turn__note {
+  margin-top: var(--space-4);
+  padding-left: var(--space-4);
+  border-left: 1px solid var(--rule);
+  font-size: var(--text-small);
+  line-height: 1.6;
+  color: var(--ink-tertiary);
+  max-width: 40rem;
+}
+
+.turn__actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+}
+
+/* ==================================================================
+   Progress
+   ================================================================== */
+.thinking {
+  max-width: 44rem;
+}
+
+.thinking__stage {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: var(--text-body);
+  color: var(--ink-secondary);
+}
+
+.thinking__ellipsis {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  padding-top: 0.35em;
+}
+
+.thinking__ellipsis span {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--ink-quaternary);
+  animation: thinking-dot 1.2s var(--ease-in-out) infinite;
+}
+
+.thinking__ellipsis span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.thinking__ellipsis span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes thinking-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+.thinking__track {
+  position: relative;
+  display: block;
+  height: 1px;
+  margin-top: var(--space-5);
+  background: var(--rule-faint);
+  overflow: hidden;
+}
+
+.thinking__sweep {
+  position: absolute;
+  inset-block: 0;
+  width: 30%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--accent) 45%,
+    var(--accent) 55%,
+    transparent
+  );
+  animation: thinking-sweep 2.1s var(--ease-in-out) infinite;
+}
+
+@keyframes thinking-sweep {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+
+/* ==================================================================
+   Failure
+   ================================================================== */
+.turn--error .turn__failed {
+  color: var(--ink-tertiary);
+}
+
+.turn--error .turn__lead {
+  color: var(--ink-primary);
+}
+
+/* ==================================================================
+   Suggestions
+   ================================================================== */
+.followups {
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--rule-faint);
+}
+
+.followups__label {
+  display: block;
+  margin-bottom: var(--space-3);
+}
+
+.followups__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.followups--quiet {
+  margin-top: var(--space-4);
+  border-top-color: transparent;
+  padding-top: 0;
+  opacity: 0.72;
+  transition: opacity var(--duration-base) var(--ease-out);
+}
+
+.followups--quiet:hover,
+.followups--quiet:focus-within {
+  opacity: 1;
+}
+
+/* ==================================================================
+   Small screens
+   ================================================================== */
+@media (max-width: 900px) {
+  .turn--you {
+    padding-left: var(--space-4);
+    margin-bottom: var(--space-6);
+  }
+
+  .turn--you .turn__claim {
+    max-width: none;
+    font-size: clamp(1.25rem, 5.4vw, 1.5rem);
+  }
+
+  /* The long-claim override must come after the mobile display size, or a
+     pasted paragraph would render at display size on a phone. */
+  .turn--you .turn__claim--long {
+    font-size: 1.0625rem;
+    line-height: 1.58;
+  }
+
+  .turn__prose,
+  .thinking {
+    max-width: none;
+  }
+
+  .turn__lead {
+    max-width: none;
+  }
+
+  .turn__head {
+    margin-bottom: var(--space-4);
+  }
+}

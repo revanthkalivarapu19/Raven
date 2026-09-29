@@ -1,0 +1,73 @@
+/* RAVEN — attached images
+   A thumbnail in the conversation, full size on request. */
+
+.turn__attachment {
+  margin-bottom: var(--space-4);
+}
+
+.turn__attachment-button {
+  display: block;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  cursor: zoom-in;
+}
+
+.turn__attachment img {
+  max-height: 15rem;
+  width: auto;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--paper-sunken);
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.turn__attachment-button:hover img {
+  opacity: 0.92;
+}
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-toast);
+  display: grid;
+  place-items: center;
+  gap: var(--space-4);
+  padding: var(--gutter);
+  background: var(--scrim-strong);
+  cursor: zoom-out;
+  animation: raven-fade var(--duration-base) var(--ease-out);
+}
+
+.lightbox img {
+  max-width: min(70rem, 100%);
+  max-height: 80vh;
+  width: auto;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-float);
+}
+
+.lightbox__close {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.lightbox__close:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.lightbox__name {
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* The old inline attachment rule moved here; keep the small-screen cap. */
+@media (max-width: 900px) {
+  .turn__attachment img {
+    max-height: 11rem;
+  }
+}

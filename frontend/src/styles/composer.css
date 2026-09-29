@@ -1,0 +1,216 @@
+/* RAVEN — composer
+   ------------------------------------------------------------------
+   One field, one attachment, one action. It grows with what is typed and
+   accepts an image by button, drag or paste without becoming a toolbar. */
+
+.composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-raised);
+  transition: border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.composer:focus-within {
+  border-color: var(--ink-quaternary);
+  box-shadow: var(--shadow-float);
+}
+
+.composer__row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-1);
+}
+
+.composer__input {
+  flex: 1 1 auto;
+  min-height: 2.25rem;
+  max-height: 12rem;
+  padding: 0.5rem var(--space-2);
+  font-size: var(--text-body);
+  line-height: 1.5;
+  color: var(--ink-primary);
+  background: transparent;
+  overflow-y: auto;
+}
+
+.composer__input::placeholder {
+  color: var(--ink-quaternary);
+}
+
+.composer__input:disabled {
+  color: var(--ink-tertiary);
+}
+
+.composer__attach {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  color: var(--ink-tertiary);
+  border-radius: var(--radius-sm);
+  transition: color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
+}
+
+.composer__attach:hover:not(:disabled) {
+  color: var(--ink-primary);
+  background: var(--paper-tint);
+}
+
+.composer__attach:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.composer__send {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  color: var(--ink-inverse);
+  background: var(--ink-primary);
+  border-radius: var(--radius-pill);
+  transition: background-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out);
+}
+
+.composer__send:hover:not(:disabled) {
+  background: var(--ink-hover);
+}
+
+.composer__send:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.composer__send:disabled {
+  background: var(--paper-sunken);
+  color: var(--ink-quaternary);
+  cursor: not-allowed;
+}
+
+/* ---- Attachment preview ---- */
+.composer__preview {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2);
+  background: var(--paper-tint);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  animation: turn-in var(--duration-base) var(--ease-out) both;
+}
+
+.composer__preview img {
+  flex: none;
+  width: 3rem;
+  height: 3rem;
+  object-fit: cover;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-xs);
+}
+
+.composer__preview-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.composer__preview-name {
+  font-size: var(--text-small);
+  color: var(--ink-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer__preview-size {
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  color: var(--ink-quaternary);
+}
+
+.composer__preview-remove {
+  margin-left: auto;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  color: var(--ink-tertiary);
+  border-radius: var(--radius-pill);
+  transition: color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
+}
+
+.composer__preview-remove:hover {
+  color: var(--ink-primary);
+  background: var(--paper-sunken);
+}
+
+/* ---- Rejection and drag ---- */
+.composer__error {
+  padding: var(--space-1) var(--space-2) 0;
+  font-size: var(--text-small);
+  color: var(--verdict-fake);
+}
+
+.composer__drop {
+  position: absolute;
+  inset: -5px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  font-size: var(--text-ui);
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  animation: raven-fade var(--duration-fast) var(--ease-out);
+}
+
+/* The line above the composer that answers "check another claim". */
+.composer-nudge {
+  margin-bottom: var(--space-2);
+  padding-left: var(--space-2);
+  font-size: var(--text-small);
+  color: var(--ink-tertiary);
+  animation: turn-in var(--duration-base) var(--ease-out) both;
+}
+
+/* ---- Small screens ---- */
+@media (max-width: 900px) {
+  .composer__row {
+    gap: 0;
+  }
+
+  /* 16px keeps mobile browsers from zooming the field on focus. */
+  .composer__input {
+    font-size: 1rem;
+  }
+
+  .composer__attach,
+  .composer__send {
+    width: 2.625rem;
+    height: 2.625rem;
+  }
+
+  .composer__preview-remove {
+    width: 2.25rem;
+    height: 2.25rem;
+  }
+
+  .composer__preview-name {
+    max-width: 11rem;
+  }
+}

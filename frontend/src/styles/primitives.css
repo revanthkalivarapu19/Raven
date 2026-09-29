@@ -1,0 +1,426 @@
+/* RAVEN — primitives
+   ------------------------------------------------------------------
+   The reusable pieces of the design system: labels, buttons, fields,
+   chips, tags, the theme switch, surfaces. Components (conversation,
+   verdict, evidence, composer) are built from these and never re-invent them.
+   ------------------------------------------------------------------ */
+
+/* ==================================================================
+   Labels — small monospace folios. Used for eyebrows, metadata and
+   section markers. Uppercase with wide tracking, ink-quaternary.
+   ================================================================== */
+.folio {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+
+.folio--accent {
+  color: var(--accent);
+}
+
+.folio__index {
+  color: var(--ink-quaternary);
+}
+
+/* A short hairline that can sit before a folio as an editorial tick. */
+.folio__tick {
+  display: block;
+  width: 1.25rem;
+  height: 1px;
+  background: var(--rule-strong);
+}
+
+/* ==================================================================
+   Rules — the primary structural device of the interface.
+   ================================================================== */
+.rule {
+  height: 1px;
+  border: 0;
+  background: var(--rule);
+}
+
+.rule--faint {
+  background: var(--rule-faint);
+}
+
+.rule--strong {
+  background: var(--rule-strong);
+}
+
+/* ==================================================================
+   Surfaces
+   ================================================================== */
+.surface {
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+}
+
+.surface--quiet {
+  background: var(--paper-tint);
+}
+
+.surface--raised {
+  box-shadow: var(--shadow-raised);
+}
+
+/* ==================================================================
+   Buttons
+   ================================================================== */
+.btn {
+  --btn-bg: transparent;
+  --btn-fg: var(--ink-primary);
+  --btn-border: var(--rule-strong);
+
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 0.5625rem var(--space-4);
+  font-family: var(--font-sans);
+  font-size: var(--text-ui);
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: var(--tracking-tight);
+  color: var(--btn-fg);
+  background: var(--btn-bg);
+  border: 1px solid var(--btn-border);
+  border-radius: var(--radius-sm);
+  transition: background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.btn:disabled,
+.btn[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn:not(:disabled):active {
+  transform: translateY(0.5px);
+}
+
+/* Primary — solid ink. Used once per view at most. */
+.btn--primary {
+  --btn-bg: var(--ink-primary);
+  --btn-fg: var(--ink-inverse);
+  --btn-border: var(--ink-primary);
+}
+
+.btn--primary:not(:disabled):hover {
+  --btn-bg: var(--ink-hover);
+  --btn-border: var(--ink-hover);
+}
+
+/* Accent — reserved for the single most important action. */
+.btn--accent {
+  --btn-bg: var(--accent);
+  --btn-fg: var(--on-accent);
+  --btn-border: var(--accent);
+}
+
+.btn--accent:not(:disabled):hover {
+  --btn-bg: var(--accent-deep);
+  --btn-border: var(--accent-deep);
+}
+
+/* Quiet — the default when several actions sit together. */
+.btn--quiet {
+  --btn-border: var(--rule);
+}
+
+.btn--quiet:not(:disabled):hover {
+  --btn-bg: var(--paper-tint);
+  --btn-border: var(--rule-strong);
+}
+
+/* Bare — text-only, for low-emphasis or inline actions. */
+.btn--bare {
+  --btn-border: transparent;
+  --btn-fg: var(--ink-secondary);
+  padding-inline: var(--space-2);
+}
+
+.btn--bare:not(:disabled):hover {
+  --btn-bg: var(--paper-tint);
+  --btn-fg: var(--ink-primary);
+}
+
+/* Sizes */
+.btn--sm {
+  padding: 0.375rem var(--space-3);
+  font-size: var(--text-small);
+}
+
+.btn--lg {
+  padding: 0.75rem var(--space-5);
+  font-size: var(--text-body);
+}
+
+.btn--block {
+  width: 100%;
+}
+
+.btn--icon {
+  padding: 0;
+  width: 2.125rem;
+  height: 2.125rem;
+  border-radius: var(--radius-sm);
+  color: var(--ink-secondary);
+  --btn-border: transparent;
+}
+
+.btn--icon:not(:disabled):hover {
+  --btn-bg: var(--paper-tint);
+  --btn-fg: var(--ink-primary);
+}
+
+/* Loading state keeps the label's width so nothing jumps. */
+.btn.is-loading {
+  color: transparent;
+  pointer-events: none;
+}
+
+.btn.is-loading::after {
+  content: '';
+  position: absolute;
+  width: 0.875rem;
+  height: 0.875rem;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  color: var(--btn-fg);
+  animation: raven-spin 620ms linear infinite;
+}
+
+@keyframes raven-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ==================================================================
+   Fields
+   ================================================================== */
+.field {
+  display: block;
+  width: 100%;
+  padding: 0.6875rem var(--space-4);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--leading-snug);
+  color: var(--ink-primary);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.field::placeholder {
+  color: var(--ink-quaternary);
+}
+
+.field:hover {
+  border-color: var(--rule-strong);
+}
+
+.field:focus {
+  outline: none;
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.field[aria-invalid='true'] {
+  border-color: var(--verdict-fake-line);
+  box-shadow: 0 0 0 3px var(--verdict-fake-soft);
+}
+
+/* ==================================================================
+   Chips — light, tappable affordances (suggestions, follow-ups).
+   ================================================================== */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  padding: 0.4375rem var(--space-4);
+  font-family: var(--font-sans);
+  font-size: var(--text-ui);
+  font-weight: 450;
+  line-height: 1.35;
+  text-align: left;
+  color: var(--ink-secondary);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-pill);
+  transition: color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.chip:hover {
+  color: var(--ink-primary);
+  border-color: var(--rule-strong);
+  background: var(--paper-raised);
+}
+
+.chip:active {
+  transform: translateY(0.5px);
+}
+
+.chip--accent {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.chip--accent:hover {
+  color: var(--accent-deep);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.chip__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ==================================================================
+   Tags — static, non-interactive metadata.
+   ================================================================== */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0.1875rem var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+  background: var(--paper-sunken);
+  border-radius: var(--radius-xs);
+}
+
+.tag--accent {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+
+/* ==================================================================
+   Dot — small status mark used next to verdicts and source labels.
+   ================================================================== */
+.dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.dot--hollow {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+}
+
+/* ==================================================================
+   Theme toggle — a two-state switch, sized to sit in the rail.
+   ================================================================== */
+.theme-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0.3125rem 0.4375rem;
+  font-size: var(--text-small);
+  color: var(--ink-tertiary);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  transition: color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
+}
+
+.theme-toggle:hover {
+  color: var(--ink-primary);
+  border-color: var(--rule-strong);
+  background: var(--paper-tint);
+}
+
+.theme-toggle__track {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 2.625rem;
+  height: 1.375rem;
+  padding-inline: 0.25rem;
+  border-radius: var(--radius-pill);
+  background: var(--paper-sunken);
+  border: 1px solid var(--rule);
+  flex: none;
+}
+
+.theme-toggle__track svg {
+  position: relative;
+  z-index: 1;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+/* The knob. Slides between the two glyphs rather than swapping icons. */
+.theme-toggle__knob {
+  position: absolute;
+  top: 50%;
+  left: 0.1875rem;
+  width: 0.9375rem;
+  height: 0.9375rem;
+  margin-top: -0.46875rem;
+  border-radius: 50%;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule-strong);
+  box-shadow: var(--shadow-flat);
+  transition: transform var(--duration-base) var(--ease-spring),
+    background-color var(--duration-fast) var(--ease-out);
+}
+
+[data-theme='dark'] .theme-toggle__knob {
+  transform: translateX(1.25rem);
+}
+
+/* ==================================================================
+   Small screens
+   Pointer targets get a floor of 40px: a chip that is 36px tall is fine
+   for a mouse and fiddly for a thumb.
+   ================================================================== */
+@media (max-width: 900px) {
+  .chip {
+    min-height: 2.5rem;
+    padding-inline: var(--space-4);
+  }
+
+  .btn--sm {
+    min-height: 2.375rem;
+  }
+
+  .theme-toggle {
+    min-height: 2.5rem;
+    padding-inline: var(--space-3);
+  }
+}

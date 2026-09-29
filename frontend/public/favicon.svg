@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="RAVEN">
+  <rect width="64" height="64" rx="12" fill="#16150f" />
+  <text
+    x="32"
+    y="46"
+    fill="#faf8f4"
+    font-family="'Instrument Serif', 'Iowan Old Style', Georgia, 'Times New Roman', serif"
+    font-size="44"
+    text-anchor="middle"
+  >R</text>
+</svg>
