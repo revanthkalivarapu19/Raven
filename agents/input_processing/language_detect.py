@@ -1,152 +1,147 @@
 """
 language_detect.py
 ==================
-RAVEN Project - Language Detection Module
+RAVEN Project - Enhanced Language Detection Module
 
 Responsibility:
-    Receives extracted text (from the OCR module or user input) and identifies
-    whether the language is English ("en"), Telugu ("te"), or Mixed ("mixed").
-
-This module does NOT perform translation, cleaning for NLP,
-normalization, or any form of reasoning. Its sole job is
-language identification.
+    Identifies whether text is English ("en"), Telugu ("te"), or Mixed ("mixed"),
+    and computes a reliable confidence score.
+    Supports short texts, OCR fragments, and segment-level language identification.
 
 Dependencies:
     pip install langdetect
-
-Usage (from other modules):
-    from agents.input_processing.language_detect import detect_language
-    lang = detect_language("some extracted text")
-    # Returns "en", "te", or "mixed"
 """
 
 import logging
 import re
-from langdetect import detect, LangDetectException, DetectorFactory
+from typing import Tuple, Dict, Any
+from langdetect import detect_langs, DetectorFactory
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Deterministic seed - MUST be set before any detection call.
-# Without this, langdetect can return different results on every run
-# because it uses a random sampling approach internally.
-# Setting seed = 0 locks the randomness so results are reproducible.
-# ---------------------------------------------------------------------------
+# Deterministic seed for reproducible langdetect results
 DetectorFactory.seed = 0
 
-# ---------------------------------------------------------------------------
-# Constants - the only three languages this module is designed to return.
-# ---------------------------------------------------------------------------
-LANG_ENGLISH = "en"   # ISO 639-1 code for English
-LANG_TELUGU = "te"    # ISO 639-1 code for Telugu
-LANG_MIXED = "mixed"  # Custom code for Code-Mixed English+Telugu
-DEFAULT_LANG = LANG_ENGLISH  # Fallback when detection fails or is uncertain
+LANG_ENGLISH = "en"
+LANG_TELUGU = "te"
+LANG_MIXED = "mixed"
+DEFAULT_LANG = LANG_ENGLISH
+
+# Regex patterns for scripts
+RE_TELUGU = re.compile(r'[\u0C00-\u0C7F]')
+RE_ENGLISH = re.compile(r'[a-zA-Z]')
+RE_ALPHANUMERIC = re.compile(r'[\w]', re.UNICODE)
 
 
 def _preprocess_text(text: str) -> str:
     """
-    Clean raw text before passing it to the language detector.
-
-    Steps:
-        1. Guard against None input.
-        2. Strip leading/trailing whitespace.
-        3. Replace newlines with spaces (OCR output often has line breaks
-           that can confuse detection).
-        4. Collapse multiple spaces into one.
+    Clean text before language detection:
+    - Safe handling of None
+    - Whitespace normalization
     """
-    # Step 1 - handle None safely
     if text is None:
         return ""
-
-    # Step 2 - remove leading/trailing whitespace
-    text = text.strip()
-
-    # Step 3 - flatten newlines into spaces
+    text = str(text).strip()
     text = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
-
-    # Step 4 - collapse multiple whitespace characters into one
-    text = re.sub(r"\s+", " ", text)
-
-    return text.strip()
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def _contains_telugu(text: str) -> bool:
+def count_script_characters(text: str) -> Tuple[int, int]:
     """
-    Checks if the text contains any Telugu characters.
-    Uses the Unicode block for Telugu: U+0C00 to U+0C7F.
+    Returns (telugu_char_count, english_char_count).
     """
-    return bool(re.search(r'[\u0C00-\u0C7F]', text))
+    telugu_count = len(RE_TELUGU.findall(text))
+    english_count = len(RE_ENGLISH.findall(text))
+    return telugu_count, english_count
 
 
-def _contains_english(text: str) -> bool:
+def detect_language_with_confidence(text: str) -> Tuple[str, float]:
     """
-    Checks if the text contains any English (Latin) words/letters.
+    Detect whether the input text is English, Telugu, or Mixed,
+    along with a confidence estimate in [0.0, 1.0].
+
+    Logic:
+    1. Count Telugu and English characters.
+    2. If both are present:
+       - If both have significant presence (> 10% each of total alpha chars, or >= 3 chars each): "mixed"
+       - Otherwise classified by dominant script with slightly lower confidence.
+    3. If only Telugu is present: "te" with high confidence.
+    4. If only English is present: "en" with high confidence.
+    5. If neither (e.g., numbers, symbols, foreign Latin): use langdetect fallback.
+    6. Empty/None text falls back to ("en", 0.0).
     """
-    return bool(re.search(r'[a-zA-Z]+', text))
+    cleaned = _preprocess_text(text)
+    if not cleaned:
+        return DEFAULT_LANG, 0.0
+
+    te_count, en_count = count_script_characters(cleaned)
+    total_alpha = te_count + en_count
+
+    # Case 1: Both scripts present
+    if te_count > 0 and en_count > 0:
+        te_ratio = te_count / total_alpha
+        en_ratio = en_count / total_alpha
+
+        # To be genuinely mixed, both scripts must have at least 10% representation
+        # and at least 3 characters. Otherwise, classify by the dominant script.
+        if te_ratio >= 0.10 and en_ratio >= 0.10 and te_count >= 3 and en_count >= 3:
+            confidence = round(min(0.98, 0.70 + 0.30 * min(1.0, total_alpha / 15.0)), 3)
+            return LANG_MIXED, confidence
+        elif te_count > en_count:
+            confidence = round(min(0.99, 0.75 + 0.25 * te_ratio), 3)
+            return LANG_TELUGU, confidence
+        else:
+            confidence = round(min(0.99, 0.75 + 0.25 * en_ratio), 3)
+            return LANG_ENGLISH, confidence
+
+    # Case 2: Only Telugu characters present
+    if te_count > 0:
+        confidence = round(min(0.99, 0.75 + 0.25 * min(1.0, te_count / 10.0)), 3)
+        return LANG_TELUGU, confidence
+
+    # Case 3: Only English characters present
+    if en_count > 0:
+        confidence = round(min(0.99, 0.75 + 0.25 * min(1.0, en_count / 10.0)), 3)
+        return LANG_ENGLISH, confidence
+
+    # Case 4: Neither script detected (numbers, punctuation, symbols, URLs)
+    # Check for URLs or domain names
+    if "http" in cleaned.lower() or "www." in cleaned.lower() or ".com" in cleaned.lower():
+        return LANG_ENGLISH, 0.90
+
+    # Fallback to langdetect for romanized or other characters
+    try:
+        langs = detect_langs(cleaned)
+        if langs:
+            top_lang = langs[0]
+            if top_lang.lang == "te":
+                return LANG_TELUGU, round(float(top_lang.prob), 3)
+            elif top_lang.lang == "en":
+                return LANG_ENGLISH, round(float(top_lang.prob), 3)
+            else:
+                return LANG_ENGLISH, 0.50
+    except Exception:
+        pass
+
+    return DEFAULT_LANG, 0.50
 
 
 def detect_language(text: str) -> str:
     """
-    Detect whether the input text is English, Telugu, or Mixed.
-
-    This function prioritizes script detection (Unicode ranges) because
-    langdetect often misclassifies code-mixed sentences.
-    
-    Logic priority:
-        1. Both Telugu and English present -> "mixed"
-        2. Only Telugu present -> "te"
-        3. Only English present -> "en"
-        4. Neither (e.g. symbols/numbers only) -> langdetect fallback
-        5. Any exception -> "en"
-
-    Args:
-        text: Extracted text (may be messy, None, or empty).
-
-    Returns:
-        "en", "te", or "mixed"
+    Backwards-compatible convenience function returning only the language code.
     """
-    # Preprocess text to handle None, whitespace, newlines
-    cleaned_text = _preprocess_text(text)
-
-    if not cleaned_text:
-        return DEFAULT_LANG
-
-    has_telugu = _contains_telugu(cleaned_text)
-    has_english = _contains_english(cleaned_text)
-
-    # 1. If BOTH Telugu script and English words exist
-    if has_telugu and has_english:
-        return LANG_MIXED
-    
-    # 2. If ONLY Telugu script exists
-    if has_telugu:
-        return LANG_TELUGU
-    
-    # 3. If ONLY English words exist
-    if has_english:
-        return LANG_ENGLISH
-    
-    # 4. Otherwise, use langdetect() fallback
-    try:
-        detected = detect(cleaned_text)
-        if detected == LANG_TELUGU:
-            return LANG_TELUGU
-        return LANG_ENGLISH
-        
-    except LangDetectException:
-        # 5. Fallback for exceptions
-        return DEFAULT_LANG
-    except Exception:
-        return DEFAULT_LANG
+    lang, _ = detect_language_with_confidence(text)
+    return lang
 
 
-# ---------------------------------------------------------------------------
-# Test suite - runs only when this file is executed directly,
-# not when imported by other RAVEN modules.
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    import sys
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
     test_cases = [
-        ("English sentence", "The RBI reduced the repo rate."),
+        ("English sentence", "The RBI reduced the repo rate by 0.50%."),
         ("Pure Telugu sentence", "తెలంగాణ ప్రభుత్వం కొత్త పథకాన్ని ప్రకటించింది"),
         ("Mixed Telugu + English", "PM Modi హైదరాబాద్లో ప్రసంగించారు."),
         ("OCR English text", "BREAKING NEWS"),
@@ -156,20 +151,17 @@ if __name__ == "__main__":
         ("Very short Telugu word", "హాయ్"),
         ("Empty string", ""),
         ("Numbers only", "123456789"),
+        ("URL input", "https://example.com/news"),
         ("Random OCR garbage", "@@##%%^^&&"),
     ]
 
-    print("=" * 60)
-    print("  RAVEN - Language Detection Module - Test Suite")
-    print("=" * 60)
+    print("=" * 65)
+    print("  RAVEN - Enhanced Language Detection Test Suite")
+    print("=" * 65)
 
     for description, sample_text in test_cases:
-        result = detect_language(sample_text)
-        display_text = repr(sample_text[:50]) + ("..." if len(sample_text) > 50 else "")
-        print(f"\n  Test    : {description}")
-        print(f"  Input   : {display_text}")
-        print(f"  Result  : {result}")
-
-    print("\n" + "=" * 60)
-    print("  All test cases completed.")
-    print("=" * 60)
+        lang, conf = detect_language_with_confidence(sample_text)
+        print(f"  Test       : {description}")
+        print(f"  Input      : {repr(sample_text)}")
+        print(f"  Result     : {lang} (confidence: {conf})")
+        print("-" * 65)

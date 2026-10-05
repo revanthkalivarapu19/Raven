@@ -1,6 +1,1 @@
-__pycache__/
-*.pyc
-venv/
-.venv/
-.env
-*.zip
+__pycache__/*.pycvenv/.venv/.env*.zip.freebuff/.pytest_cache/

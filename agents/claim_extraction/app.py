@@ -1,4 +1,4 @@
-from agents.claim_extraction_agent import ClaimExtractionAgent
+from agents.claim_extraction.claim_extraction_agent import ClaimExtractionAgent
 
 
 def main():

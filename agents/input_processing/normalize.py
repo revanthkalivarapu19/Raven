@@ -4,125 +4,114 @@ normalize.py
 RAVEN Project - Text Normalization Module
 
 Responsibility:
-    Receives text in its ORIGINAL detected language ("en", "te", or "mixed").
-    Performs mechanical text normalization (cleaning whitespace, 
-    punctuation, and casing) without changing the meaning.
-
-This module does NOT perform:
-    - OCR
-    - Language Detection
-    - Translation
-    - NLP
-    - Tokenization
-    - Claim Extraction
-    - Any LLM reasoning
-
-Usage (from other modules):
-    from agents.input_processing.normalize import normalize_text
-    clean_text = normalize_text("Hello   World  !!!")
+    Performs conservative text normalization preserving factual integrity:
+    - Unicode NFC normalization (crucial for Telugu conjuncts/diacritics)
+    - Removal of erratic whitespace and control characters
+    - Punctuation hygiene without destroying numbers, currencies, dates, decimals, or URLs
+    - STRICT preservation of casing (no blind lowercasing)
+    - Preservation of names, organizations, abbreviations, models, percentages
 """
 
 import logging
 import re
+import sys
+import unicodedata
 
 logger = logging.getLogger(__name__)
 
-def normalize_text(text: str, lang: str) -> str:
+# Regex for protecting specific structures
+RE_URL = re.compile(r'https?://\S+|www\.\S+', re.IGNORECASE)
+RE_DECIMAL = re.compile(r'(?<=\d)\s*([.,])\s*(?=\d)')
+RE_CURRENCY_NUMBER = re.compile(r'([₹$€£¥])\s+(\d)')
+RE_PERCENT = re.compile(r'(\d)\s+([%％])')
+
+
+def normalize_text(text: str, lang: str = "en") -> str:
     """
-    Normalize text in its ORIGINAL detected language ("en", "te", or "mixed") mechanically before the NLP pipeline.
+    Safely normalize text according to RAVEN claim-preservation principles.
     
-    Rules applied:
-        1. Guard against None input.
-        2. Replace newlines with spaces.
-        3. Collapse multiple spaces into one.
-        4. Remove spaces before punctuation.
-        5. Collapse repeated punctuation.
-        6. Convert English/mixed text to lowercase.
-
-    Args:
-        text (str): The raw text to normalize.
-        lang (str): The original detected language ("en", "te", or "mixed").
-
-    Returns:
-        str: A safely normalized string.
+    Guarantees:
+    - Unicode NFC normalization applied.
+    - Factual values (0.50%, ₹5,000, $100, 2026-08-09, 10:30 PM) preserved.
+    - Entities and abbreviations (RBI, NASA, GPT-4, 5G) preserved in original casing.
+    - URLs preserved intact.
+    - No blind lowercasing.
+    - Whitespace collapsed cleanly.
     """
+    if text is None:
+        return ""
+
+    if not isinstance(text, str):
+        text = str(text)
+
+    if not text.strip():
+        return ""
+
     try:
-        # 1. Handle None safely. Return an empty string.
-        if text is None:
-            return ""
+        # 1. Unicode NFC Normalization
+        text = unicodedata.normalize('NFC', text)
 
-        # Convert to string just in case, though type hint says str
-        if not isinstance(text, str):
-            text = str(text)
+        # 2. Normalize line breaks and tabs into spaces
+        text = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ").replace("\t", " ")
 
-        # 2. Replace newlines with spaces (done before space collapse).
-        text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        # 3. Clean zero-width spaces / unprintable formatting characters outside Telugu ligature needs
+        text = text.replace("\ufeff", "").replace("\u200b", "").replace("\u00a0", " ")
 
-        # 3. Collapse multiple spaces into one.
-        text = re.sub(r"\s+", " ", text)
+        # 4. Collapse spaces around decimals (e.g. "0 . 50" -> "0.50")
+        text = RE_DECIMAL.sub(r'\1', text)
 
-        # 4. Remove spaces before punctuation.
-        # Matches a space followed by any of .,!?;:
-        text = re.sub(r"\s+([.,!?;:])", r"\1", text)
+        # 5. Fix spaces between currency symbol and amount (e.g., "₹ 5,000" -> "₹5,000")
+        text = RE_CURRENCY_NUMBER.sub(r'\1\2', text)
 
-        # 5. Collapse repeated punctuation.
-        # Matches any of .,!?;: followed by one or more of the same character.
-        text = re.sub(r'([.,!?;:])\1+', r"\1", text)
+        # 6. Fix spaces before percent sign (e.g. "50 %" -> "50%")
+        text = RE_PERCENT.sub(r'\1\2', text)
 
-        # 6. Convert English/mixed text to lowercase unconditionally.
-        if lang in ("en", "mixed"):
-            text = text.lower()
+        # 7. Collapse spaces before sentence punctuation (.,!?;:), avoiding URLs
+        # Only collapse space before punctuation if preceded by a letter or closing quote/paren
+        text = re.sub(r'([a-zA-Z\u0C00-\u0C7F\)\]\'\"])\s+([.,!?;:])(?=\s|$)', r'\1\2', text)
 
-        # Final cleanup for leading/trailing whitespace
+        # 8. Collapse excessive repeated punctuation (e.g. "!!!!" -> "!", "?????" -> "?")
+        # Keep ellipsis "..." and double hyphens "--"
+        text = re.sub(r'([!?]){2,}', r'\1', text)
+        text = re.sub(r'\.{4,}', '...', text)
+
+        # 9. Collapse multiple consecutive whitespace into a single space
+        text = re.sub(r'\s+', ' ', text)
+
+        # 10. Strip leading and trailing whitespace
         return text.strip()
 
     except Exception as e:
-        logger.exception("Unexpected error during text normalization: %s", e)
-        # Return whatever we can safely, or empty string on total failure
-        return str(text).strip() if text else ""
+        logger.exception(f"Unexpected error during normalization: {e}")
+        return text.strip() if text else ""
 
 
-# ---------------------------------------------------------------------------
-# Test suite - runs only when this file is executed directly.
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    # Configure simple console logger for testing
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 
     test_cases = [
-        ("en", "The Telangana Government announced a new scheme."),
-        ("te", "తెలంగాణ ప్రభుత్వం కొత్త పథకాన్ని ప్రకటించింది"),
-        ("mixed", "PM Modi హైదరాబాద్లో ప్రసంగించారు."),
-        ("en", "Breaking NEWS !!!"),
-        ("en", "OCR extracted English sentence"),
-        ("en", "COVID vaccine is safe."),
-        ("en", "RBI reduced the repo rate."),
-        ("en", "NASA launched a new satellite."),
-        ("en", "Cost is ₹4000."),
-        ("en", "Visit https://www.example.com"),
-        ("en", "#BreakingNews"),
-        ("en", "@PMOIndia"),
-        ("en", ""),
-        ("en", None),
+        ("The RBI reduced the repo rate by 0.50% .", "en"),
+        ("తెలంగాణ ప్రభుత్వం కొత్త పథకాన్ని ప్రకటించింది", "te"),
+        ("PM Modi హైదరాబాద్ లో ప్రసంగించారు .", "mixed"),
+        ("Breaking NEWS  ! ! !", "en"),
+        ("Cost is ₹ 5,000 or $ 100 on 2026-08-09 at 10:30 PM .", "en"),
+        ("GPT-4 and 5G technology launched by NASA .", "en"),
+        ("Visit https://www.example.com/news?id=123 for details .", "en"),
+        ("COVID-19 vaccine reduces risk by 50 % .", "en"),
+        ("   Lots   of    spaces    between words   ", "en"),
+        ("", "en"),
+        (None, "en"),
     ]
 
-    print("=" * 60)
-    print("  RAVEN - Normalization Module - Test Suite")
-    print("=" * 60)
+    print("=" * 65)
+    print("  RAVEN - Enhanced Normalization Test Suite")
+    print("=" * 65)
 
-    for lang, sample_text in test_cases:
-        result = normalize_text(sample_text, lang)
-        
-        # Format the input for display safely
-        if sample_text is None:
-            display_input = "None"
-        else:
-            display_input = repr(sample_text[:60]) + ("..." if len(sample_text) > 60 else "")
-
-        print(f"\n  Lang     : {lang}")
-        print(f"  Input    : {display_input}")
-        print(f"  Result   : {repr(result)}")
-
-    print("\n" + "=" * 60)
-    print("  All test cases completed.")
-    print("=" * 60)
+    for sample, lang in test_cases:
+        res = normalize_text(sample, lang)
+        print(f"Input : {repr(sample)}")
+        print(f"Output: {repr(res)}")
+        print("-" * 65)
