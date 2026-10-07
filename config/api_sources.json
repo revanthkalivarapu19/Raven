@@ -1,0 +1,64 @@
+{
+  "api_sources": [
+    {
+      "name": "Google Fact Check API",
+      "base_url": "https://developers.google.com/fact-check/tools/api",
+      "type": "api",
+      "priority": "high",
+      "authority_score": 0.90,
+      "allowed_formats": [
+        "json"
+      ],
+      "crawl_depth": 0,
+      "enabled": true
+    },
+    {
+      "name": "NewsAPI",
+      "base_url": "https://newsapi.org",
+      "type": "api",
+      "priority": "high",
+      "authority_score": 0.95,
+      "allowed_formats": [
+        "json"
+      ],
+      "crawl_depth": 0,
+      "enabled": true
+    },
+    {
+      "name": "Wikipedia API",
+      "base_url": "https://en.wikipedia.org/api/rest_v1/",
+      "type": "api",
+      "priority": "high",
+      "authority_score": 0.80,
+      "allowed_formats": [
+        "json"
+      ],
+      "crawl_depth": 0,
+      "enabled": true
+    },
+    {
+      "name": "Wikidata API",
+      "base_url": "https://www.wikidata.org/wiki/Wikidata:Data_access",
+      "type": "api",
+      "priority": "medium",
+      "authority_score": 0.80,
+      "allowed_formats": [
+        "json"
+      ],
+      "crawl_depth": 0,
+      "enabled": true
+    },
+    {
+      "name": "GDELT API",
+      "base_url": "https://api.gdeltproject.org/api/v2",
+      "type": "api",
+      "priority": "medium",
+      "authority_score": 0.90,
+      "allowed_formats": [
+        "json"
+      ],
+      "crawl_depth": 0,
+      "enabled": true
+    }
+  ]
+}

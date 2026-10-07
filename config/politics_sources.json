@@ -1,0 +1,82 @@
+{
+  "politics_sources": [
+    {
+      "name": "Election Commission of India",
+      "base_url": "https://eci.gov.in",
+      "type": "government",
+      "priority": "high",
+      "authority_score": 1.0,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "Supreme Court of India",
+      "base_url": "https://www.sci.gov.in",
+      "type": "government",
+      "priority": "high",
+      "authority_score": 1.0,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "India Code",
+      "base_url": "https://www.indiacode.nic.in",
+      "type": "government",
+      "priority": "medium",
+      "authority_score": 1.0,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "Press Information Bureau",
+      "base_url": "https://pib.gov.in",
+      "type": "government",
+      "priority": "medium",
+      "authority_score": 1.0,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "United Nations",
+      "base_url": "https://www.un.org",
+      "type": "international",
+      "priority": "medium",
+      "authority_score": 0.94,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "United Nations Security Council",
+      "base_url": "https://www.un.org/securitycouncil",
+      "type": "international",
+      "priority": "medium",
+      "authority_score": 0.94,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    }
+  ]
+}

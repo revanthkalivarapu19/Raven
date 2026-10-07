@@ -6,7 +6,7 @@ from agents.xai.output_parser import parse_xai_output
 
 class XAIAgent:
 
-    def __init__(self, model="llama3.1"):
+    def __init__(self, model="llama3.1:8b"):
         self.model = model
 
     def explain(

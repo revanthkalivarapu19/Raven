@@ -1,0 +1,70 @@
+
+{
+  "finance_sources": [
+    {
+      "name": "International Monetary Fund",
+      "base_url": "https://www.imf.org",
+      "type": "international",
+      "priority": "high",
+      "authority_score": 0.95,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "World Bank",
+      "base_url": "https://www.worldbank.org",
+      "type": "international",
+      "priority": "high",
+      "authority_score": 0.95,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "Reserve Bank of India",
+      "base_url": "https://www.rbi.org.in",
+      "type": "government",
+      "priority": "high",
+      "authority_score": 1.0,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "SEBI",
+      "base_url": "https://www.sebi.gov.in",
+      "type": "government",
+      "priority": "medium",
+      "authority_score": 1.0,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "Ministry of Finance India",
+      "base_url": "https://finmin.gov.in",
+      "type": "government",
+      "priority": "medium",
+      "authority_score": 1.0,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    }
+  ]
+}

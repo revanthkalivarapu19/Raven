@@ -9,6 +9,10 @@ Input Processing -> Claim Extraction -> Domain Detection -> STOP
 
 from typing import TypedDict, Optional, List, Dict, Any
 
+from rag_ingestion.retrieval.evidence_schema import Evidence
+from rag_ingestion.verification.verification_schema import OverallVerification, VerificationFailure
+from rag_ingestion.personas.persona_schema import PersonaInsight
+
 
 class TextSegment(TypedDict, total=False):
     """
@@ -64,3 +68,24 @@ class RavenState(TypedDict, total=False):
     # Downstream Agent Outputs
     claim: str                       # Output of Claim Extraction
     domain: Dict[str, Any]           # Output of Domain Detection: {"domain", "confidence", "reason"}
+
+    # Retrieval and Evidence
+    local_evidence: List[Evidence]
+    external_evidence: List[Evidence]
+    fused_evidence: List[Evidence]
+
+    # Verification
+    verification_result: Optional[OverallVerification]
+    verification_failure: Optional[VerificationFailure]
+
+    # Reflection, Supervisor, and Personas
+    reflection_result: Dict[str, Any]
+    supervisor_result: Dict[str, Any]
+    persona_insights: List[PersonaInsight]
+
+    # Final Output
+    final_output: Dict[str, Any]
+
+    # Retry Context
+    attempt_count: int
+    maximum_attempts_reached: bool

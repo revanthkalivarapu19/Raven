@@ -4,7 +4,7 @@ import ollama
 class LLMService:
 
     def __init__(self):
-        self.model = "llama3.1"
+        self.model = "llama3.1:8b"
 
     def generate(self, prompt):
 

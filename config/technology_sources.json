@@ -1,0 +1,95 @@
+{
+  "technology_sources": [
+    {
+      "name": "NIST",
+      "base_url": "https://www.nist.gov",
+      "type": "government",
+      "priority": "high",
+      "authority_score": 0.97,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "RFC Editor",
+      "base_url": "https://www.rfc-editor.org",
+      "type": "standard",
+      "priority": "high",
+      "authority_score": 0.97,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "W3C",
+      "base_url": "https://www.w3.org/TR",
+      "type": "standard",
+      "priority": "high",
+      "authority_score": 0.97,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "Google Research",
+      "base_url": "https://research.google",
+      "type": "research",
+      "priority": "medium",
+      "authority_score": 0.95,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "Microsoft Research",
+      "base_url": "https://www.microsoft.com/en-us/research",
+      "type": "research",
+      "priority": "medium",
+      "authority_score": 0.95,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "OpenAI Research",
+      "base_url": "https://openai.com/research",
+      "type": "research",
+      "priority": "medium",
+      "authority_score": 0.97,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "Meta AI",
+      "base_url": "https://ai.meta.com/research",
+      "type": "research",
+      "priority": "medium",
+      "authority_score": 0.95,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    }
+  ]
+}

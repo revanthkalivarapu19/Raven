@@ -22,7 +22,7 @@ class ReflectionAgent:
     Outputs YES/NO for evidence sufficiency/reliability (NOT Real/Fake/Unverified).
     """
 
-    def __init__(self, model: str = "llama3.1"):
+    def __init__(self, model: str = "llama3.1:8b"):
         self.model = model
 
     def _convert_evidence(self, evidence: Any) -> Dict[str, Any]:

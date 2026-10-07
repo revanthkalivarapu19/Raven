@@ -1,0 +1,100 @@
+{
+  "factcheck_sources": [
+    {
+      "name": "Google Fact Check",
+      "base_url": "https://toolbox.google.com/factcheck/explorer",
+      "type": "factcheck",
+      "priority": "high",
+      "authority_score": 0.90,
+      "allowed_formats": [
+        "html"
+      ],
+      "crawl_depth": 1,
+      "enabled": true
+    },
+    {
+      "name": "Snopes",
+      "base_url": "https://www.snopes.com",
+      "type": "factcheck",
+      "priority": "high",
+      "authority_score": 0.90,
+      "allowed_formats": [
+        "html"
+      ],
+      "crawl_depth": 1,
+      "enabled": true
+    },
+    {
+      "name": "PolitiFact",
+      "base_url": "https://www.politifact.com",
+      "type": "factcheck",
+      "priority": "high",
+      "authority_score": 0.90,
+      "allowed_formats": [
+        "html"
+      ],
+      "crawl_depth": 1,
+      "enabled": true
+    },
+    {
+      "name": "AFP Fact Check",
+      "base_url": "https://factcheck.afp.com",
+      "type": "factcheck",
+      "priority": "medium",
+      "authority_score": 0.90,
+      "allowed_formats": [
+        "html"
+      ],
+      "crawl_depth": 1,
+      "enabled": true
+    },
+    {
+      "name": "FactCheck.org",
+      "base_url": "https://www.factcheck.org",
+      "type": "factcheck",
+      "priority": "medium",
+      "authority_score": 0.90,
+      "allowed_formats": [
+        "html"
+      ],
+      "crawl_depth": 1,
+      "enabled": true
+    },
+    {
+      "name": "Full Fact",
+      "base_url": "https://fullfact.org",
+      "type": "factcheck",
+      "priority": "medium",
+      "authority_score": 0.90,
+      "allowed_formats": [
+        "html"
+      ],
+      "crawl_depth": 1,
+      "enabled": true
+    },
+    {
+      "name": "Alt News",
+      "base_url": "https://www.altnews.in",
+      "type": "factcheck",
+      "priority": "medium",
+      "authority_score": 0.90,
+      "allowed_formats": [
+        "html"
+      ],
+      "crawl_depth": 1,
+      "enabled": true
+    },
+    {
+      "name": "BOOM Live",
+      "base_url": "https://www.boomlive.in",
+      "type": "factcheck",
+      "priority": "medium",
+      "authority_score": 0.90,
+      "allowed_formats": [
+        "html"
+      ],
+      "crawl_depth": 1,
+      "enabled": true
+    }
+  ]
+}

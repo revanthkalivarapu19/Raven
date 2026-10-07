@@ -1,0 +1,54 @@
+{
+  "medical_sources": [
+    {
+      "name": "WHO",
+      "base_url": "https://www.who.int/publications",
+      "type": "government",
+      "priority": "high",
+      "authority_score": 1.0,
+      "allowed_formats": ["pdf", "html"],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "CDC",
+      "base_url": "https://www.cdc.gov",
+      "type": "government",
+      "priority": "high",
+      "authority_score": 1.0,
+      "allowed_formats": ["pdf", "html"],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "NIH",
+      "base_url": "https://www.nih.gov/news-events",
+      "type": "government",
+      "priority": "high",
+      "authority_score": 0.98,
+      "allowed_formats": ["pdf", "html"],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "PubMed",
+      "base_url": "https://pubmed.ncbi.nlm.nih.gov",
+      "type": "research",
+      "priority": "high",
+      "authority_score": 0.98,
+      "allowed_formats": ["pdf", "html"],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "FDA",
+      "base_url": "https://www.fda.gov",
+      "type": "government",
+      "priority": "high",
+      "authority_score": 1.0,
+      "allowed_formats": ["pdf", "html"],
+      "crawl_depth": 2,
+      "enabled": true
+    }
+  ]
+}

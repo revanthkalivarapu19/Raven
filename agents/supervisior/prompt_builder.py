@@ -52,6 +52,8 @@ def build_supervisor_prompt(supervisor_input: Dict[str, Any]) -> str:
     domain = supervisor_input.get("domain", "")
     evidence_list: List[Any] = supervisor_input.get("evidence_list", [])
     reflection_notes = supervisor_input.get("reflection_notes")
+    persona_insights = supervisor_input.get("persona_insights", [])
+    verification_result = supervisor_input.get("verification_result")
     attempt_count = supervisor_input.get("attempt_count", 1)
     maximum_attempts_reached = supervisor_input.get("maximum_attempts_reached", False)
 
@@ -103,6 +105,92 @@ def build_supervisor_prompt(supervisor_input: Dict[str, Any]) -> str:
             prompt_parts.append(f"{reflection_notes}\n")
     else:
         prompt_parts.append("No reflection analysis is available.\n")
+
+    prompt_parts.append("Overall Verification Analysis:")
+    if not verification_result:
+        prompt_parts.append("No overall verification result is available.\n")
+    else:
+        if hasattr(verification_result, "model_dump"):
+            verification_data = verification_result.model_dump()
+        elif hasattr(verification_result, "dict"):
+            verification_data = verification_result.dict()
+        elif isinstance(verification_result, dict):
+            verification_data = verification_result
+        else:
+            verification_data = {}
+
+        overall_assessment = verification_data.get(
+            "overall_assessment",
+            "N/A",
+        )
+        overall_confidence = verification_data.get(
+            "overall_confidence",
+            "N/A",
+        )
+
+        prompt_parts.append(
+            f"- Overall Assessment: {overall_assessment}\n"
+            f"- Overall Verification Confidence: {overall_confidence}\n"
+        )
+
+        verification_items = verification_data.get("results", [])
+
+        if verification_items:
+            prompt_parts.append("Per-Evidence Verification Results:")
+
+            for idx, item in enumerate(verification_items, 1):
+                if hasattr(item, "model_dump"):
+                    item_data = item.model_dump()
+                elif hasattr(item, "dict"):
+                    item_data = item.dict()
+                elif isinstance(item, dict):
+                    item_data = item
+                else:
+                    item_data = {}
+
+                prompt_parts.append(
+                    f"  {idx}. Evidence ID: "
+                    f"{item_data.get('evidence_id', 'N/A')} | "
+                    f"Relationship: "
+                    f"{item_data.get('relationship', 'N/A')} | "
+                    f"Confidence: "
+                    f"{item_data.get('confidence', 'N/A')} | "
+                    f"Reasoning: "
+                    f"{item_data.get('reasoning', '')}\n"
+                )
+
+        prompt_parts.append(
+            "Treat the Overall Verification Analysis as a direct signal "
+            "from the evidence verification layer. If the assessment is "
+            "CONFLICTING_EVIDENCE, do not ignore the conflict; only select "
+            "Real or Fake when the supplied evidence and downstream "
+            "analysis clearly resolve it. Otherwise prefer Unverified.\n"
+        )
+
+    prompt_parts.append("Persona Analysis:")
+    if not persona_insights:
+        prompt_parts.append("No persona analysis is available.\n")
+    else:
+        for idx, persona in enumerate(persona_insights, 1):
+            if hasattr(persona, "model_dump"):
+                persona_data = persona.model_dump()
+            elif hasattr(persona, "dict"):
+                persona_data = persona.dict()
+            elif isinstance(persona, dict):
+                persona_data = persona
+            else:
+                persona_data = {"reasoning": str(persona)}
+
+            prompt_parts.append(
+                f"Persona {idx}: {persona_data.get('persona', 'Unknown')}\n"
+                f"- Assessment: {persona_data.get('assessment', 'N/A')}\n"
+                f"- Confidence: {persona_data.get('confidence', 'N/A')}\n"
+                f"- Evidence IDs: {persona_data.get('evidence_ids', [])}\n"
+                f"- Reasoning: {persona_data.get('reasoning', '')}\n"
+            )
+
+    prompt_parts.append("Use persona analysis as supporting reasoning only. "
+                        "Do not treat persona opinions as independent evidence.\n")
 
     prompt_parts.append(f"""
 CRITICAL VERDICT GUIDELINES:

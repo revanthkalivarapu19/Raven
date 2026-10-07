@@ -1,0 +1,43 @@
+{
+  "general_sources": [
+    {
+      "name": "Wikipedia",
+      "base_url": "https://en.wikipedia.org/wiki/Main_Page",
+      "type": "general",
+      "priority": "high",
+      "authority_score": 0.80,
+      "allowed_formats": [
+        "html",
+        "txt"
+      ],
+      "crawl_depth": 1,
+      "enabled": true
+    },
+    {
+      "name": "Wikidata",
+      "base_url": "https://www.wikidata.org",
+      "type": "general",
+      "priority": "medium",
+      "authority_score": 0.80,
+      "allowed_formats": [
+        "json",
+        "html"
+      ],
+      "crawl_depth": 1,
+      "enabled": true
+    },
+    {
+      "name": "DBpedia",
+      "base_url": "https://www.dbpedia.org",
+      "type": "general",
+      "priority": "medium",
+      "authority_score": 0.80,
+      "allowed_formats": [
+        "html",
+        "ttl"
+      ],
+      "crawl_depth": 1,
+      "enabled": true
+    }
+  ]
+}

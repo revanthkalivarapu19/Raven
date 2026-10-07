@@ -8,7 +8,7 @@ import ollama
 
 logger = logging.getLogger(__name__)
 
-def call_supervisor_llm(prompt: str, model: str = "llama3.1") -> str:
+def call_supervisor_llm(prompt: str, model: str = "llama3.1:8b") -> str:
     """
     Send the prompt to the local Ollama model using the ollama Python package (ollama.chat),
     with a low temperature (e.g. 0.2) for more consistent structured output.

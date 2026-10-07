@@ -25,7 +25,7 @@ class DomainDetectionAgent:
     - Return structured JSON
     """
 
-    def __init__(self, model_name: str = "llama3.1"):
+    def __init__(self, model_name: str = "llama3.1:8b"):
         self.model_name = model_name
 
     def build_prompt(self, claim: str) -> str:

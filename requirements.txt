@@ -13,3 +13,15 @@ uvicorn
 langgraph
 loguru
 
+
+# Layer 6 evidence retrieval and verification dependencies
+aiohttp
+beautifulsoup4
+PyMuPDF
+pdfminer.six
+sentence-transformers
+faiss-cpu
+rank-bm25
+pandas
+scikit-learn
+rapidfuzz

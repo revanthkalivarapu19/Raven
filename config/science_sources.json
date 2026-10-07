@@ -1,0 +1,95 @@
+{
+  "science_sources": [
+    {
+      "name": "NASA",
+      "base_url": "https://science.nasa.gov",
+      "type": "government",
+      "priority": "high",
+      "authority_score": 0.97,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "European Space Agency",
+      "base_url": "https://www.esa.int",
+      "type": "government",
+      "priority": "high",
+      "authority_score": 0.97,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "IPCC",
+      "base_url": "https://www.ipcc.ch",
+      "type": "research",
+      "priority": "high",
+      "authority_score": 0.97,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "Nature",
+      "base_url": "https://www.nature.com",
+      "type": "research",
+      "priority": "high",
+      "authority_score": 0.97,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "Science Magazine",
+      "base_url": "https://www.science.org",
+      "type": "research",
+      "priority": "high",
+      "authority_score": 0.97,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "Springer Open",
+      "base_url": "https://link.springer.com",
+      "type": "research",
+      "priority": "medium",
+      "authority_score": 0.96,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    },
+    {
+      "name": "arXiv",
+      "base_url": "https://arxiv.org",
+      "type": "research",
+      "priority": "medium",
+      "authority_score": 0.96,
+      "allowed_formats": [
+        "pdf",
+        "html"
+      ],
+      "crawl_depth": 2,
+      "enabled": true
+    }
+  ]
+}
