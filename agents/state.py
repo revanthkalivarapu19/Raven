@@ -4,7 +4,7 @@ state.py
 RAVEN Project - Shared LangGraph State Schema
 
 Defines the shared state contract flowing through:
-Input Processing -> Claim Extraction -> Domain Detection -> STOP
+Input Processing -> Claim Extraction -> Domain Detection -> Evidence Verification -> Reflection -> Persona Analysis -> Supervisor -> XAI -> END
 """
 
 from typing import TypedDict, Optional, List, Dict, Any

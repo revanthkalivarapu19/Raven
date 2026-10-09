@@ -190,6 +190,7 @@ class ClaimProcessingPipeline:
         top_k_local: int = 5,
         top_k_external: int = 5,
         top_k_fused: int = 5,
+        retrieval_query: str | None = None,
     ) -> ClaimProcessingResult:
         """Execute the full pipeline and return a structured result.
 
@@ -201,11 +202,18 @@ class ClaimProcessingPipeline:
         5. Verify the fused evidence.
         """
         domain = canonical_domain(domain)
+        retrieval_query = (retrieval_query or claim).strip()
+
+        logger.info(
+            "Evidence retrieval query: %s",
+            retrieval_query,
+        )
+
         # 1. Local retrieval
         local_retrieval_error: Optional[ProviderError] = None
         try:
             local_evidence: List[Evidence] = self.retrieval_manager.search(
-                claim=claim, domain=domain, top_k=top_k_local
+                claim=retrieval_query, domain=domain, top_k=top_k_local
             )
         except FileNotFoundError as exc:
             # A missing domain index means local retrieval is unavailable; it
@@ -220,7 +228,7 @@ class ClaimProcessingPipeline:
 
         # 2. External retrieval
         external_result: ExternalSourceResult = self.external_manager.search(
-            query=claim, domain=domain, top_k=top_k_external
+            query=retrieval_query, domain=domain, top_k=top_k_external
         )
         logger.debug(
             "External retrieval returned %d items with %d errors",

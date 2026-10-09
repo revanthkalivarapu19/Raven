@@ -231,12 +231,34 @@ def evidence_verification_node(state: RavenState) -> Dict[str, Any]:
     try:
         pipeline = get_claim_processing_pipeline()
 
+        retrieval_context = (
+            state.get("processed_text")
+            or state.get("text")
+            or claim
+        ).strip()
+
+        retrieval_query = claim.strip()
+
+        if (
+            retrieval_context
+            and retrieval_context.lower() != claim.strip().lower()
+        ):
+            retrieval_query = (
+                f"{claim.strip()} "
+                f"Context: {retrieval_context}"
+            )
+
+        logger.info(
+            "Building evidence retrieval query from claim + input context."
+        )
+
         result = pipeline.process(
             claim=claim,
             domain=domain,
             top_k_local=5,
             top_k_external=5,
             top_k_fused=5,
+            retrieval_query=retrieval_query,
         )
 
         errors = list(state.get("errors", []))
