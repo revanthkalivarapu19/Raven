@@ -11,7 +11,10 @@ and quality flags in the shared state without any intermediate NLP pipeline.
 """
 
 import logging
+import json
+import difflib
 import os
+import re
 import sys
 from typing import Optional, Dict, Any
 
@@ -25,15 +28,153 @@ from rag_ingestion.pipeline.claim_processing import ClaimProcessingPipeline
 from agents.reflection.reflection_agent import ReflectionAgent
 from agents.supervisior.supervisor_agent import run_supervisor
 from agents.xai.xai_agent import XAIAgent
+from agents.claim_extraction.services.llm_service import LLMService
 from rag_ingestion.supervisor.supervisor_agent import SupervisorAgent
 from rag_ingestion.personas.journalist_persona import JournalistPersona
 from rag_ingestion.personas.legal_persona import LegalPersona
 from rag_ingestion.personas.scientific_persona import ScientificPersona
+from rag_ingestion.verification.verification_schema import VerificationFailure
 
 logger = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 3
 HIGH_CONFIDENCE_THRESHOLD = 0.70
+
+
+def _build_retrieval_queries(
+    claim: str, retrieval_context: Optional[str] = None, domain: Optional[str] = None
+) -> list[str]:
+    """Ask the model for focused retrieval queries, with a safe claim fallback."""
+    claim_text = (claim or "").strip()
+    context_text = (retrieval_context or "").strip()
+    if not claim_text:
+        return []
+
+    prompt = f"""Generate exactly 3 or 4 concise search queries for fact-checking.
+Return search phrases only: keyword or phrase searches, never questions or sentences.
+Do not use question marks. Preserve names, organizations, locations, numbers, dates,
+and multi-word phrases exactly as copied from the claim or context, including spelling
+and whitespace. Never join, split, rewrite, or invent words or entities. Keep spaces
+between every word and entity; never concatenate separate words. Use only information
+present in the claim and context.
+Return ONLY valid JSON in the form {{\"queries\": [\"query 1\", \"query 2\", \"query 3\"]}}.
+Do not answer the claim or explain your reasoning.
+
+Detected domain: {domain or "unknown"}
+Claim: {claim_text}
+Retrieval context: {context_text}
+"""
+    source = f"{claim_text} {context_text}"
+    source_tokens = {
+        token.casefold()
+        for token in re.findall(r"[^\W_]+(?:[.%][^\W_]+)*", source)
+    }
+
+    def normalized_token(token: str) -> str:
+        return re.sub(r"[^\w]", "", token.casefold())
+
+    source_normalized_tokens = {
+        normalized_token(token) for token in source_tokens if normalized_token(token)
+    }
+
+    def is_grounded_token(token: str) -> bool:
+        """Allow formatting/inflection variants without accepting new concepts."""
+        normalized = normalized_token(token)
+        if not normalized:
+            return False
+        if normalized in source_normalized_tokens:
+            return True
+        for source_token in source_normalized_tokens:
+            if len(normalized) >= 4 and len(source_token) >= 4:
+                if normalized.startswith(source_token) or source_token.startswith(normalized):
+                    return True
+                if difflib.SequenceMatcher(None, normalized, source_token).ratio() >= 0.70:
+                    return True
+        return False
+
+    def split_source_token(token: str):
+        """Return source-word parts when a token is a glued source phrase."""
+        token = token.casefold()
+        if token in source_tokens:
+            return [token]
+        possible = [False] * (len(token) + 1)
+        paths = [[] for _ in range(len(token) + 1)]
+        possible[0] = True
+        for end in range(1, len(token) + 1):
+            for start in range(end):
+                piece = token[start:end]
+                if possible[start] and piece in source_tokens:
+                    possible[end] = True
+                    paths[end] = paths[start] + [piece]
+                    break
+        return paths[-1] if possible[-1] and len(paths[-1]) >= 2 else None
+
+    failed_queries = []
+    for attempt in range(2):
+        try:
+            retry_feedback = ""
+            if failed_queries:
+                retry_feedback = (
+                    "\nThe previous attempt failed validation for these generated "
+                    "queries:\n"
+                    + "\n".join(
+                        f"- {query}: {reason}" for query, reason in failed_queries
+                    )
+                    + "\nRegenerate all queries using only grounded source terms.\n"
+                )
+            raw = LLMService().generate(prompt + retry_feedback)
+            parsed = json.loads(raw)
+            candidates = parsed.get("queries", []) if isinstance(parsed, dict) else parsed
+            if not isinstance(candidates, list) or not 3 <= len(candidates) <= 4:
+                raise ValueError("query planner did not return 3-4 queries")
+            queries = []
+            seen = set()
+            failed_queries = []
+            for candidate in candidates:
+                if not isinstance(candidate, str):
+                    failed_queries.append((str(candidate), "query is not text"))
+                    continue
+                query = re.sub(r"\s+", " ", candidate).strip().strip("` ")
+                query_tokens = re.findall(
+                    r"[^\W_]+(?:[.%][^\W_]+)*", query
+                )
+                if not query or "?" in query or not query_tokens:
+                    failed_queries.append((query, "not a concise search phrase"))
+                    continue
+                repaired_query = query
+                grounded_count = 0
+                for token in query_tokens:
+                    parts = split_source_token(token)
+                    grounded = parts is not None or is_grounded_token(token)
+                    if grounded:
+                        grounded_count += 1
+                    if parts is not None and len(parts) > 1:
+                        repaired_query = re.sub(
+                            re.escape(token), " ".join(parts), repaired_query,
+                            count=1, flags=re.IGNORECASE,
+                        )
+                overlap = grounded_count / len(query_tokens)
+                if overlap < 0.60:
+                    failed_queries.append(
+                        (query, "insufficient grounded term overlap")
+                    )
+                    continue
+                query = re.sub(r"\s+", " ", repaired_query).strip()
+                key = query.casefold()
+                if key not in seen:
+                    seen.add(key)
+                    queries.append(query)
+                if len(queries) == 4:
+                    break
+            if 3 <= len(queries) <= 4:
+                return queries
+            raise ValueError("query planner returned malformed or ungrounded queries")
+        except Exception as error:
+            logger.warning(
+                "Retrieval query planning attempt %d failed: %s", attempt + 1, error
+            )
+    return [claim_text]
+
 
 # Singletons for downstream agents to avoid re-instantiation overhead
 _CLAIM_AGENT = None
@@ -190,7 +331,7 @@ def domain_detection_node(state: RavenState) -> Dict[str, Any]:
         }
 
 
-def evidence_verification_node(state: RavenState) -> Dict[str, Any]:
+def _legacy_evidence_verification_node(state: RavenState) -> Dict[str, Any]:
     """Node 4: Evidence retrieval, fusion, and verification."""
     logger.info("Executing Graph Node: [evidence_verification]")
 
@@ -237,53 +378,101 @@ def evidence_verification_node(state: RavenState) -> Dict[str, Any]:
             or claim
         ).strip()
 
-        retrieval_query = claim.strip()
-
-        if (
-            retrieval_context
-            and retrieval_context.lower() != claim.strip().lower()
-        ):
-            retrieval_query = (
-                f"{claim.strip()} "
-                f"Context: {retrieval_context}"
-            )
-
-        logger.info(
-            "Building evidence retrieval query from claim + input context."
+        retrieval_queries = _build_retrieval_queries(
+            claim=claim,
+            retrieval_context=retrieval_context,
+            domain=domain,
         )
 
-        result = pipeline.process(
-            claim=claim,
-            domain=domain,
-            top_k_local=5,
-            top_k_external=5,
-            top_k_fused=5,
-            retrieval_query=retrieval_query,
+        logger.info(
+            "Running %d focused evidence retrieval queries.", len(retrieval_queries)
         )
 
         errors = list(state.get("errors", []))
+        local_evidence_by_id = {}
+        external_evidence_by_id = {}
+        local_retrieval_error = None
 
-        if result.local_retrieval_error is not None:
-            errors.append(
-                f"local_retrieval_error: {result.local_retrieval_error}"
+        for retrieval_query in retrieval_queries:
+            try:
+                local_evidence = pipeline.retrieval_manager.search(
+                    claim=retrieval_query,
+                    domain=domain,
+                    top_k=5,
+                )
+            except FileNotFoundError as retrieval_error:
+                logger.warning(
+                    "Local retrieval unavailable for domain %s: %s",
+                    domain,
+                    retrieval_error,
+                )
+                local_evidence = []
+                if local_retrieval_error is None:
+                    local_retrieval_error = retrieval_error
+
+            external_result = pipeline.external_manager.search(
+                query=retrieval_query,
+                domain=domain,
+                top_k=5,
             )
 
-        for error in result.external_source_errors:
+            for item in local_evidence:
+                local_evidence_by_id[item.evidence_id] = item
+
+            for item in external_result.evidence:
+                try:
+                    normalized_item = pipeline.normalizer.normalize(item)
+                except Exception as normalization_error:
+                    logger.warning(
+                        "Normalization failed for external evidence %s: %s",
+                        item.evidence_id,
+                        normalization_error,
+                    )
+                    errors.append(
+                        f"external_retrieval_error: {normalization_error}"
+                    )
+                    continue
+                external_evidence_by_id[normalized_item.evidence_id] = normalized_item
+
+            for error in external_result.errors:
+                errors.append(f"external_retrieval_error: {error}")
+
+        local_evidence = list(local_evidence_by_id.values())
+        external_evidence = list(external_evidence_by_id.values())
+        if local_retrieval_error is not None:
             errors.append(
-                f"external_retrieval_error: {error}"
+                f"local_retrieval_error: {local_retrieval_error}"
             )
 
-        if result.verification_failure is not None:
+        fused_evidence = pipeline.fusion_manager.fuse(
+            local_evidence=local_evidence,
+            external_evidence=external_evidence,
+            top_k=5,
+        )
+        verification_failure = None
+        try:
+            verification_result = pipeline.verification_manager.verify(
+                claim=claim,
+                evidence_list=fused_evidence,
+            )
+        except Exception as verification_error:
+            logger.error("Verification failed: %s", verification_error)
+            verification_result = None
+            verification_failure = VerificationFailure.from_exception(
+                claim=claim,
+                evidence_count=len(fused_evidence),
+                exc=verification_error,
+            )
             errors.append(
-                f"verification_error: {result.verification_failure}"
+                f"verification_error: {verification_failure}"
             )
 
         return {
-            "local_evidence": result.local_evidence,
-            "external_evidence": result.external_evidence,
-            "fused_evidence": result.fused_evidence,
-            "verification_result": result.verification_result,
-            "verification_failure": result.verification_failure,
+            "local_evidence": local_evidence,
+            "external_evidence": external_evidence,
+            "fused_evidence": fused_evidence,
+            "verification_result": verification_result,
+            "verification_failure": verification_failure,
             "errors": errors,
         }
 
@@ -303,6 +492,60 @@ def evidence_verification_node(state: RavenState) -> Dict[str, Any]:
             ],
         }
 
+
+
+def evidence_verification_node(state: RavenState) -> Dict[str, Any]:
+    """Build retrieval queries and delegate retrieval/verification to the pipeline."""
+    logger.info("Executing Graph Node: [evidence_verification]")
+    claim = state.get("claim") or ""
+    domain_state = state.get("domain") or {}
+    domain = (
+        domain_state.get("domain") or "Unknown"
+        if isinstance(domain_state, dict)
+        else str(domain_state)
+    )
+    if not claim.strip() or not domain.strip() or domain.lower() == "unknown":
+        return {
+            "local_evidence": [], "external_evidence": [], "fused_evidence": [],
+            "verification_result": None, "verification_failure": None,
+            "errors": state.get("errors", []) + [
+                "evidence_verification_error: missing claim or valid domain"
+            ],
+        }
+    try:
+        retrieval_context = (
+            state.get("processed_text") or state.get("text") or claim
+        ).strip()
+        queries = _build_retrieval_queries(
+            claim=claim, retrieval_context=retrieval_context, domain=domain
+        )
+        result = get_claim_processing_pipeline().process(
+            claim=claim, domain=domain, retrieval_queries=queries,
+            top_k_local=5, top_k_external=5, top_k_fused=5,
+        )
+        errors = list(state.get("errors", []))
+        errors.extend(f"external_retrieval_error: {error}" for error in result.external_source_errors)
+        if result.local_retrieval_error is not None:
+            errors.append(f"local_retrieval_error: {result.local_retrieval_error}")
+        if result.verification_failure is not None:
+            errors.append(f"verification_error: {result.verification_failure}")
+        return {
+            "local_evidence": result.local_evidence,
+            "external_evidence": result.external_evidence,
+            "fused_evidence": result.fused_evidence,
+            "verification_result": result.verification_result,
+            "verification_failure": result.verification_failure,
+            "errors": errors,
+        }
+    except Exception as e:
+        logger.exception("Error in evidence_verification_node: %s", e)
+        return {
+            "local_evidence": [], "external_evidence": [], "fused_evidence": [],
+            "verification_result": None, "verification_failure": None,
+            "errors": state.get("errors", []) + [
+                f"evidence_verification_error: {e}"
+            ],
+        }
 
 
 def reflection_node(state: RavenState) -> Dict[str, Any]:
@@ -477,6 +720,7 @@ def supervisor_node(state: RavenState) -> Dict[str, Any]:
     reflection_result = state.get("reflection_result")
     persona_insights = state.get("persona_insights") or []
     verification_result = state.get("verification_result")
+    verification_failure = state.get("verification_failure")
     attempt_count = state.get("attempt_count", 1)
     maximum_attempts_reached = state.get("maximum_attempts_reached", False)
 
@@ -494,6 +738,38 @@ def supervisor_node(state: RavenState) -> Dict[str, Any]:
         }
 
     try:
+        def unverified_result(reason: str) -> Dict[str, Any]:
+            return {
+                "final_verdict": "Unverified",
+                "confidence_score": 0,
+                "trust_score": 0,
+                "reasoning_summary": reason,
+                "key_evidence_used": [],
+            }
+
+        # Safety boundary: the supervisor may not produce a verdict without a
+        # successful, non-conflicting verification result.
+        if verification_failure is not None:
+            logger.warning(
+                "Supervisor safety gate triggered: verification failure -> Unverified"
+            )
+            return {
+                "supervisor_result": unverified_result(
+                    "Evidence verification failed; no definitive verdict is available."
+                ),
+                "verification_failure": verification_failure,
+            }
+
+        if verification_result is None:
+            logger.warning(
+                "Supervisor safety gate triggered: missing verification -> Unverified"
+            )
+            return {
+                "supervisor_result": unverified_result(
+                    "Evidence verification was not completed; no definitive verdict is available."
+                ),
+            }
+
         # Safety gate: unresolved conflicting evidence must not be converted
         # directly into a definitive Real/Fake verdict by the LLM.
         verification_assessment = None
@@ -516,26 +792,10 @@ def supervisor_node(state: RavenState) -> Dict[str, Any]:
             getattr(verification_assessment, "value", verification_assessment)
         ).split(".")[-1]
 
-        if assessment_name == "CONFLICTING_EVIDENCE":
-            overall_confidence = 0.0
-
-            if isinstance(verification_result, dict):
-                raw_confidence = verification_result.get(
-                    "overall_confidence",
-                    0.0,
-                )
-            else:
-                raw_confidence = getattr(
-                    verification_result,
-                    "overall_confidence",
-                    0.0,
-                )
-
-            try:
-                overall_confidence = float(raw_confidence)
-            except (TypeError, ValueError):
-                overall_confidence = 0.0
-
+        if assessment_name in {
+            "INSUFFICIENT_EVIDENCE",
+            "CONFLICTING_EVIDENCE",
+        }:
             conflict_evidence_ids = []
 
             verification_results = (
@@ -571,12 +831,17 @@ def supervisor_node(state: RavenState) -> Dict[str, Any]:
                     if evidence_id:
                         conflict_evidence_ids.append(str(evidence_id))
 
-            conflict_reason = (
-                "Verification detected conflicting evidence. "
-                "The evidence set contains contradictory relationships, "
-                "so the system will not issue a definitive Real/Fake verdict "
-                "until the conflict is explicitly resolved."
-            )
+            if assessment_name == "CONFLICTING_EVIDENCE":
+                safety_reason = (
+                    "Verification detected conflicting evidence. The system "
+                    "will not issue a definitive Real/Fake verdict until the "
+                    "conflict is explicitly resolved."
+                )
+            else:
+                safety_reason = (
+                    "Verification found insufficient evidence; the system "
+                    "will not issue a definitive Real/Fake verdict."
+                )
 
             logger.warning(
                 "Supervisor safety gate triggered: "
@@ -586,13 +851,9 @@ def supervisor_node(state: RavenState) -> Dict[str, Any]:
             return {
                 "supervisor_result": {
                     "final_verdict": "Unverified",
-                    "confidence_score": round(
-                        max(0.0, min(1.0, overall_confidence)) * 100
-                    ),
-                    "trust_score": round(
-                        max(0.0, min(1.0, overall_confidence)) * 100
-                    ),
-                    "reasoning_summary": conflict_reason,
+                    "confidence_score": 0,
+                    "trust_score": 0,
+                    "reasoning_summary": safety_reason,
                     "key_evidence_used": conflict_evidence_ids,
                 },
             }
