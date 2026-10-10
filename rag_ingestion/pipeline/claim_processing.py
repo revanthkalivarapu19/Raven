@@ -287,17 +287,10 @@ class ClaimProcessingPipeline:
             external_evidence=external_evidence,
             top_k=top_k_fused,
         )
-        verification_result = None
-        verification_failure = None
         self._release_retrieval_resources()
-        try:
-            verification_result = self.verification_manager.verify(
-                claim=claim, evidence_list=fused_evidence
-            )
-        except Exception as exc:
-            verification_failure = VerificationFailure.from_exception(
-                claim=claim, evidence_count=len(fused_evidence), exc=exc
-            )
+        verification_result, verification_failure = self._verify_once(
+            claim, fused_evidence
+        )
         return ClaimProcessingResult(
             claim=claim,
             domain=domain,
@@ -309,6 +302,23 @@ class ClaimProcessingPipeline:
             verification_result=verification_result,
             verification_failure=verification_failure,
         )
+
+    def _verify_once(
+        self, claim: str, fused_evidence: List[Evidence]
+    ) -> tuple[Optional[OverallVerification], Optional[VerificationFailure]]:
+        """Run one bounded verification operation and validate its contract."""
+        try:
+            result = self.verification_manager.verify(
+                claim=claim, evidence_list=fused_evidence
+            )
+            if not isinstance(result, OverallVerification):
+                raise TypeError("verification manager returned an invalid result")
+            return result, None
+        except Exception as exc:
+            logger.error("Verification failed: %s", exc)
+            return None, VerificationFailure.from_exception(
+                claim=claim, evidence_count=len(fused_evidence), exc=exc
+            )
 
     def process(
         self,
@@ -429,18 +439,10 @@ class ClaimProcessingPipeline:
         logger.debug("Fusion produced %d items", len(fused_evidence))
 
         # 6. Verification – only the fused evidence are examined
-        verification_result: Optional[OverallVerification] = None
-        verification_failure: Optional[VerificationFailure] = None
         self._release_retrieval_resources()
-        try:
-            verification_result = self.verification_manager.verify(
-                claim=claim, evidence_list=fused_evidence
-            )
-        except Exception as exc:
-            logger.error("Verification failed: %s", exc)
-            verification_failure = VerificationFailure.from_exception(
-                claim=claim, evidence_count=len(fused_evidence), exc=exc
-            )
+        verification_result, verification_failure = self._verify_once(
+            claim, fused_evidence
+        )
 
         return ClaimProcessingResult(
             claim=claim,
