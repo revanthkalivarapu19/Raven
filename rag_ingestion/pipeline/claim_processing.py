@@ -28,6 +28,8 @@ from rag_ingestion.config.config import config as _config  # Loads .env before p
 
 logger = logging.getLogger(__name__)
 
+MAX_RETRIEVAL_QUERIES_PER_ATTEMPT = 4
+
 
 def _canonical_url(url: str) -> Optional[str]:
     """Return a stable HTTP(S) URL key, or None when the URL is unusable."""
@@ -192,6 +194,8 @@ class ClaimProcessingPipeline:
         domain: str,
         top_k_local: int,
         top_k_external: int,
+        fallback_urls_seen: set[str] | None = None,
+        fallback_urls_remaining: list[int] | None = None,
     ) -> tuple[List[Evidence], List[Evidence], Optional[ProviderError], List[ProviderError]]:
         """Retrieve and normalize one query without fusion or verification."""
         local_error = None
@@ -208,10 +212,24 @@ class ClaimProcessingPipeline:
             query=query, domain=domain, top_k=top_k_external
         )
         web_results: dict[str, WebRetrievalResult] = {}
+        fallback_urls_seen = fallback_urls_seen if fallback_urls_seen is not None else set()
+        fallback_urls_remaining = (
+            fallback_urls_remaining
+            if fallback_urls_remaining is not None
+            else [self.max_web_fallback_urls]
+        )
         if not _api_evidence_is_sufficient(
             external_result.evidence, self.minimum_sufficient_external_evidence
         ):
-            for url_key, api_evidence in _fallback_candidates(external_result.evidence)[: self.max_web_fallback_urls]:
+            candidates = []
+            for url_key, api_evidence in _fallback_candidates(external_result.evidence):
+                if url_key not in fallback_urls_seen:
+                    candidates.append((url_key, api_evidence))
+                if len(candidates) >= fallback_urls_remaining[0]:
+                    break
+            for url_key, api_evidence in candidates:
+                fallback_urls_seen.add(url_key)
+                fallback_urls_remaining[0] -= 1
                 try:
                     web_result = self.web_retriever.retrieve(api_evidence.url)
                     if web_result.error or not _meaningful(web_result.text):
@@ -244,9 +262,15 @@ class ClaimProcessingPipeline:
         external_by_id = {}
         local_error = None
         external_errors = []
-        for query in list(dict.fromkeys(query.strip() for query in queries if query and query.strip())):
+        normalized_queries = list(dict.fromkeys(
+            query.strip() for query in queries if query and query.strip()
+        ))[:MAX_RETRIEVAL_QUERIES_PER_ATTEMPT]
+        fallback_urls_seen = set()
+        fallback_urls_remaining = [self.max_web_fallback_urls]
+        for query in normalized_queries:
             local_items, external_items, query_local_error, query_errors = self._retrieve_query(
-                query, domain, top_k_local, top_k_external
+                query, domain, top_k_local, top_k_external,
+                fallback_urls_seen, fallback_urls_remaining,
             )
             for item in local_items:
                 local_by_id[item.evidence_id] = item
