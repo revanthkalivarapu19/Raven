@@ -11,8 +11,10 @@ RAVEN (Real-time Agentic Verification & Evidence-based Fake News Detection) is a
 - `npm` (bundled with Node.js)
 
 ### Installation
-Install the project dependencies:
+From the `frontend/` directory, install project dependencies:
 ```bash
+cd frontend
+
 # Using lockfile
 npm ci
 
@@ -46,7 +48,7 @@ To bundle the frontend application for production:
 ```bash
 npm run build
 ```
-The compiled output will be generated in the `dist/` directory.
+The compiled output will be generated in the `frontend/dist/` directory.
 
 ### Previewing the Production Build
 ```bash
