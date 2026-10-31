@@ -37,6 +37,9 @@ import os
 import sys
 import unittest
 import unicodedata
+import importlib.util
+from functools import wraps
+from unittest.mock import patch
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
@@ -50,6 +53,49 @@ from agents.input_processing.translate import translate_to_english, split_into_s
 from agents.input_processing.pipeline import process_input
 from agents.graph import get_raven_graph, run_pipeline
 from agents.state import RavenState
+
+
+def requires_local_indictrans(test):
+    @wraps(test)
+    def wrapped(self, *args, **kwargs):
+        try:
+            from huggingface_hub import try_to_load_from_cache
+            if importlib.util.find_spec("IndicTransToolkit.processor") is None:
+                self.skipTest("IndicTransToolkit is not installed")
+        except ImportError:
+            self.skipTest("IndicTrans dependencies are not installed")
+
+        model_files = (
+            "model.safetensors",
+            "model.safetensors.index.json",
+            "pytorch_model.bin",
+            "pytorch_model.bin.index.json",
+        )
+        tokenizer_files = ("tokenizer.json", "sentencepiece.bpe.model")
+        has_model = any(
+            try_to_load_from_cache(
+                "ai4bharat/indictrans2-indic-en-dist-200M", filename
+            )
+            for filename in model_files
+        )
+        has_tokenizer = any(
+            try_to_load_from_cache(
+                "ai4bharat/indictrans2-indic-en-dist-200M", filename
+            )
+            for filename in tokenizer_files
+        )
+        config = try_to_load_from_cache(
+            "ai4bharat/indictrans2-indic-en-dist-200M", "config.json"
+        )
+        if not config or not has_model or not has_tokenizer:
+            self.skipTest(
+                "IndicTrans model files are not available in the local Hugging Face cache"
+            )
+
+        with patch.dict(os.environ, {"HF_HUB_OFFLINE": "1"}):
+            return test(self, *args, **kwargs)
+
+    return wrapped
 
 
 class TestRavenInputProcessingFullSuite(unittest.TestCase):
@@ -75,6 +121,7 @@ class TestRavenInputProcessingFullSuite(unittest.TestCase):
         self.assertEqual(res["processed_text"], sample)
 
     # 2. Plain Telugu text claim
+    @requires_local_indictrans
     def test_02_plain_telugu_text_claim(self):
         sample = "రిజర్వ్ బ్యాంక్ వడ్డీ రేటును తగ్గించింది."
         res = process_input(text=sample)
@@ -85,6 +132,7 @@ class TestRavenInputProcessingFullSuite(unittest.TestCase):
         self.assertIn("Reserve Bank", res["processed_text"])
 
     # 3. Mixed English + Telugu claim
+    @requires_local_indictrans
     def test_03_mixed_english_telugu_claim(self):
         sample = "PM Modi హైదరాబాద్ లో ప్రసంగించారు and announced new policies."
         res = process_input(text=sample)
@@ -190,6 +238,7 @@ class TestRavenInputProcessingFullSuite(unittest.TestCase):
         self.assertEqual(res["segments"][0]["source"], "ocr")
 
     # 13. Image containing Telugu text
+    @requires_local_indictrans
     def test_13_image_containing_telugu_text(self):
         if not os.path.exists(self.te_image):
             self.skipTest("Telugu test image missing")
@@ -264,6 +313,7 @@ class TestRavenInputProcessingFullSuite(unittest.TestCase):
         self.assertEqual(norm, unicodedata.normalize('NFC', "రిజర్వ్ బ్యాంక్"))
 
     # 20. Translation behavior
+    @requires_local_indictrans
     def test_20_translation_behavior(self):
         # English sentence should skip translation
         en_meta = translate_with_metadata("The GDP growth reached 7.2 percent.")
@@ -285,13 +335,23 @@ class TestRavenInputProcessingFullSuite(unittest.TestCase):
         self.assertEqual(res, sample)
 
     # 22. Telugu text should be translated when required
+    @requires_local_indictrans
     def test_22_telugu_translated_when_required(self):
         sample = "ప్రభుత్వం వచ్చే నెలలో కొత్త పథకాన్ని ప్రారంభించనుంది."
         res = translate_to_english(sample)
         self.assertNotEqual(res, sample)
         self.assertIn("government", res.lower())
 
+    def test_translation_falls_back_when_engine_is_unavailable(self):
+        sample = "రిజర్వ్ బ్యాంక్ వడ్డీ రేటును తగ్గించింది."
+        with patch(
+            "agents.input_processing.translate.get_translation_engine",
+            side_effect=RuntimeError("IndicTrans engine unavailable"),
+        ):
+            self.assertEqual(translate_to_english(sample), sample)
+
     # 23. Mixed-language segments should be processed independently
+    @requires_local_indictrans
     def test_23_mixed_language_segments_processed_independently(self):
         if not os.path.exists(self.te_image):
             self.skipTest("Telugu test image missing")
@@ -344,7 +404,12 @@ class TestRavenInputProcessingFullSuite(unittest.TestCase):
         self.assertIn("input_processing", node_names)
         self.assertIn("claim_extraction", node_names)
         self.assertIn("domain_detection", node_names)
-        self.assertEqual(node_names, ['__start__', 'input_processing', 'claim_extraction', 'domain_detection'])
+        for node in [
+            "input_processing", "claim_extraction", "domain_detection",
+            "evidence_verification", "reflection", "persona_analysis",
+            "supervisor", "xai", "retry_evidence",
+        ]:
+            self.assertIn(node, node_names)
 
 
 if __name__ == "__main__":

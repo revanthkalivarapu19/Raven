@@ -1,5 +1,6 @@
 import logging
 import urllib.parse
+import re
 from datetime import datetime
 from typing import List, Set, Dict, Any
 
@@ -71,7 +72,10 @@ class EvidenceFusionManager:
         for ev in evidences:
             # ----- evidence_id -----
             if ev.evidence_id in seen_ids:
-                logger.debug("Duplicate evidence_id %s", ev.evidence_id)
+                logger.info(
+                    "evidence_diag drop stage=fusion_dedup evidence_id=%s reason=duplicate",
+                    ev.evidence_id,
+                )
                 continue
             # ----- url -----
             canon = None
@@ -82,7 +86,10 @@ class EvidenceFusionManager:
                     logger.warning("Failed to canonicalise URL %s: %s", ev.url, exc)
                     canon = ev.url
                 if canon in seen_urls:
-                    logger.debug("Duplicate URL %s (canonical %s)", ev.url, canon)
+                    logger.info(
+                        "evidence_diag drop stage=fusion_dedup evidence_id=%s reason=duplicate",
+                        ev.evidence_id,
+                    )
                     original = next(item for item in unique if _canonicalize_url(item.url or "") == canon)
                     merged_meta = dict(original.metadata)
                     dup_entry = {
@@ -103,7 +110,10 @@ class EvidenceFusionManager:
             if ev.url is None:
                 # No special-casing; apply duplicate text detection for all evidences without a URL.
                 if text_norm in seen_texts:
-                    logger.debug("Duplicate text for evidence_id %s", ev.evidence_id)
+                    logger.info(
+                        "evidence_diag drop stage=fusion_dedup evidence_id=%s reason=duplicate",
+                        ev.evidence_id,
+                    )
                     continue
                 # Record this text as seen among URL‑less evidences.
                 seen_texts.add(text_norm)
@@ -141,7 +151,40 @@ class EvidenceFusionManager:
             for score in scores
         ]
 
-    def _ranking_score(self, ev: Evidence, norm_sim: float | None) -> float:
+    @staticmethod
+    def _claim_features(claim: str) -> set[str]:
+        return {
+            token.casefold()
+            for token in re.findall(r"[^\W_]+(?:[.%][^\W_]+)*", claim or "")
+            if len(token) > 1
+        }
+
+    @staticmethod
+    def _political_news_provider(ev: Evidence) -> str | None:
+        if ev.retrieval_method != "external":
+            return None
+        metadata = ev.metadata or {}
+        provider = str(
+            metadata.get("external_source_type") or metadata.get("provider") or ""
+        ).casefold()
+        if provider in {"news_api", "newsapi", "gdelt"}:
+            return provider
+        return None
+
+    def _political_news_is_relevant(self, ev: Evidence, claim: str) -> bool:
+        claim_terms = {
+            token for token in self._claim_features(claim)
+            if len(token) >= 4
+            and token not in {
+                "about", "after", "against", "from", "have", "into", "over",
+                "that", "their", "there", "these", "they", "this", "those",
+                "were", "with",
+            }
+        }
+        evidence_terms = self._claim_features(f"{ev.title or ''} {ev.text or ''}")
+        return bool(claim_terms & evidence_terms)
+
+    def _ranking_score(self, ev: Evidence, norm_sim: float | None, claim: str | None = None) -> float:
         """Deterministic *retrieval‑quality* score.
 
         Weighted components (weights sum to 1.0):
@@ -162,7 +205,7 @@ class EvidenceFusionManager:
         sim = norm_sim if norm_sim is not None else 0.0
         # Normalise authority to a 0‑1 scale. The project treats ``authority_score`` as 0‑10.
         if ev.authority_score is not None:
-            auth_norm = max(0.0, min(ev.authority_score / 10.0, 1.0))
+            auth_norm = max(0.0, min(ev.authority_score if ev.authority_score <= 1.0 else ev.authority_score / 10.0, 1.0))
         else:
             auth_norm = 0.0
         # Recency factor: newer publications get higher scores, bounded to [0,1].
@@ -174,12 +217,37 @@ class EvidenceFusionManager:
             except Exception:
                 recency = 0.0
         # Final deterministic retrieval‑quality score.
-        return 0.5 * sim + 0.3 * auth_norm + 0.2 * recency
+        if not claim:
+            return 0.5 * sim + 0.3 * auth_norm + 0.2 * recency
+
+        claim_tokens = self._claim_features(claim)
+        evidence_text = f"{ev.title or ''} {ev.text or ''}"
+        evidence_tokens = self._claim_features(evidence_text)
+        lexical = len(claim_tokens & evidence_tokens) / len(claim_tokens) if claim_tokens else 0.0
+        claim_values = set(re.findall(r"\d+(?:\.\d+)?%?", claim or ""))
+        evidence_values = set(re.findall(r"\d+(?:\.\d+)?%?", evidence_text))
+        numeric = 1.0 if claim_values and claim_values & evidence_values else 0.0
+        claim_years = {t for t in claim_tokens if re.fullmatch(r"(?:19|20)\d{2}", t)}
+        evidence_years = {t for t in evidence_tokens if re.fullmatch(r"(?:19|20)\d{2}", t)}
+        temporal = 0.0
+        if claim_years:
+            temporal = 1.0 if claim_years & evidence_years else (-0.35 if evidence_years else 0.0)
+        content_factor = 0.5 if (ev.metadata or {}).get("content_quality") == "metadata_or_snippet" else 1.0
+        return content_factor * (
+            0.25 * sim + 0.25 * lexical + 0.35 * numeric + 0.10 * temporal + 0.05 * auth_norm
+        )
 
     # ---------------------------------------------------------------------
     # Public API
     # ---------------------------------------------------------------------
-    def fuse(self, local_evidence: List[Evidence], external_evidence: List[Evidence], top_k: int) -> List[Evidence]:
+    def fuse(
+        self,
+        local_evidence: List[Evidence],
+        external_evidence: List[Evidence],
+        top_k: int,
+        claim: str | None = None,
+        domain: str | None = None,
+    ) -> List[Evidence]:
         """Merge, deduplicate and rank evidence.
 
         Parameters
@@ -195,9 +263,29 @@ class EvidenceFusionManager:
             raise ValueError("top_k must be a positive integer")
         combined = list(local_evidence) + list(external_evidence)
         unique = self._deduplicate(combined)
+        logger.info(
+            "evidence_diag fusion_input local=%d external=%d combined=%d deduplicated=%d",
+            len(local_evidence),
+            len(external_evidence),
+            len(combined),
+            len(unique),
+        )
         raw_sims = [ev.similarity_score for ev in unique]
         norm_sims = self._normalize_similarity(raw_sims)
-        scored = [(self._ranking_score(ev, ns), ev) for ev, ns in zip(unique, norm_sims)]
+        scored = [(self._ranking_score(ev, ns, claim), ev) for ev, ns in zip(unique, norm_sims)]
+        # Syndicated copies remain traceable, but are not treated as independent
+        # confirmations. The first item from a source family keeps its score;
+        # later items receive a generic diminishing factor.
+        family_counts = {}
+        adjusted = []
+        for score, ev in sorted(scored, key=lambda item: -item[0]):
+            family = (ev.metadata or {}).get("source_family")
+            if family:
+                count = family_counts.get(family, 0)
+                family_counts[family] = count + 1
+                score *= 1.0 if count == 0 else 0.75 ** count
+            adjusted.append((score, ev))
+        scored = adjusted
         def sort_key(item):
             score, ev = item
             auth = ev.authority_score if ev.authority_score is not None else -1.0
@@ -205,7 +293,52 @@ class EvidenceFusionManager:
             pub_ts = ev.publication_date.timestamp() if ev.publication_date else -1.0
             return (-score, -auth, -sim, -pub_ts, ev.evidence_id)
         scored.sort(key=sort_key)
-        return [ev for _, ev in scored[:top_k]]
+        selected = scored[:top_k]
+        if domain and domain.casefold() in {"politics", "political"} and claim:
+            relevant_news = [
+                item for item in scored
+                if self._political_news_provider(item[1])
+                and self._political_news_is_relevant(item[1], claim)
+            ]
+            if relevant_news:
+                # Reserve a small part of the fused set for independent current
+                # news reporting, then fill remaining slots by normal relevance.
+                reserved_count = min(2, top_k, len(relevant_news))
+                reserved: list[tuple[float, Evidence]] = []
+                seen_providers: set[str] = set()
+                for item in relevant_news:
+                    provider = self._political_news_provider(item[1])
+                    if provider not in seen_providers:
+                        reserved.append(item)
+                        seen_providers.add(provider)
+                    if len(reserved) == reserved_count:
+                        break
+                if len(reserved) < reserved_count:
+                    reserved_ids = {item[1].evidence_id for item in reserved}
+                    reserved.extend(
+                        item for item in relevant_news
+                        if item[1].evidence_id not in reserved_ids
+                    )
+                    reserved = reserved[:reserved_count]
+                reserved_ids = {item[1].evidence_id for item in reserved}
+                selected = reserved + [
+                    item for item in scored
+                    if item[1].evidence_id not in reserved_ids
+                ][: top_k - len(reserved)]
+        selected_ids = {ev.evidence_id for _, ev in selected}
+        for _, ev in scored:
+            if ev.evidence_id not in selected_ids:
+                logger.info(
+                    "evidence_diag drop stage=fusion_rank evidence_id=%s reason=top_k_limit",
+                    ev.evidence_id,
+                )
+        logger.info(
+            "evidence_diag fusion_output ranked=%d final=%d top_k=%d",
+            len(scored),
+            len(selected),
+            top_k,
+        )
+        return [ev for _, ev in selected]
 
 # -------------------------------------------------------------------------
 # Source‑diversity note

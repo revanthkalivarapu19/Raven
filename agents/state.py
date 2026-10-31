@@ -11,6 +11,7 @@ from typing import TypedDict, Optional, List, Dict, Any
 
 from rag_ingestion.retrieval.evidence_schema import Evidence
 from rag_ingestion.verification.verification_schema import OverallVerification, VerificationFailure
+from rag_ingestion.verification.claim_scope import ClaimScope
 from rag_ingestion.personas.persona_schema import PersonaInsight
 
 
@@ -67,6 +68,8 @@ class RavenState(TypedDict, total=False):
 
     # Downstream Agent Outputs
     claim: str                       # Output of Claim Extraction
+    claim_scope: ClaimScope          # Scope used for verification eligibility
+    temporal_context: Dict[str, Any] # Explicit claim/evidence timeframe context
     domain: Dict[str, Any]           # Output of Domain Detection: {"domain", "confidence", "reason"}
 
     # Retrieval and Evidence
@@ -89,3 +92,6 @@ class RavenState(TypedDict, total=False):
     # Retry Context
     attempt_count: int
     maximum_attempts_reached: bool
+    request_started_at: float
+    request_deadline_at: float
+    request_diagnostics: Dict[str, Any]

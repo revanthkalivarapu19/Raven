@@ -28,6 +28,9 @@ PEER_REVIEWED_AUTHORITY_SCORE = 8.5
 
 
 class EuropePMCSource(BaseExternalSource):
+    search_capable = True
+    returns_full_text = False
+    supports_temporal_filtering = True
     """Concrete external source for the Europe PMC Articles RESTful API.
 
     The API requires no key, so this provider has no credential handling.
@@ -230,7 +233,7 @@ class EuropePMCSource(BaseExternalSource):
                 self.base_url,
                 params=params,
                 headers={"User-Agent": "MERIDIAN/1.0 (evidence retrieval)"},
-                timeout=self.timeout,
+                timeout=self.request_timeout(),
             )
             response.raise_for_status()
             data = response.json()

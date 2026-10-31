@@ -5,10 +5,12 @@ Wraps the call to the local Ollama model.
 
 import logging
 import ollama
+from rag_ingestion.llm_resilience import LLMResilience
 
 logger = logging.getLogger(__name__)
+_LLM_RESILIENCE = LLMResilience()
 
-def call_supervisor_llm(prompt: str, model: str = "llama3.1:8b") -> str:
+def call_supervisor_llm(prompt: str, model: str = "qwen2.5:3b") -> str:
     """
     Send the prompt to the local Ollama model using the ollama Python package (ollama.chat),
     with a low temperature (e.g. 0.2) for more consistent structured output.
@@ -19,11 +21,11 @@ def call_supervisor_llm(prompt: str, model: str = "llama3.1:8b") -> str:
     """
     try:
         logger.info(f"Calling Ollama model {model}...")
-        response = ollama.chat(
+        response = _LLM_RESILIENCE.chat(lambda: ollama.chat(
             model=model,
             messages=[{'role': 'user', 'content': prompt}],
             options={'temperature': 0.2}
-        )
+        ))
         logger.info("Ollama call completed.")
         return response['message']['content']
     except Exception as e:

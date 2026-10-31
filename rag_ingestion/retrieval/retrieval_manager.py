@@ -6,6 +6,7 @@ Public API:
 
 from __future__ import annotations
 import json
+import logging
 
 import uuid
 from datetime import datetime
@@ -17,6 +18,8 @@ from rag_ingestion.pipeline.storage_manager import StorageManager
 from rag_ingestion.retrieval.evidence_schema import Evidence
 from rag_ingestion.retrieval.faiss_query_service import FAISSQueryService
 from rag_ingestion.config.domains import canonical_domain
+
+logger = logging.getLogger(__name__)
 
 
 class RetrievalManager:
@@ -97,6 +100,7 @@ class RetrievalManager:
         results: List[Tuple[str, float]] = self.query_service.run_query(claim, norm_domain, top_k)
 
         evidences: List[Evidence] = []
+        missing_chunks = 0
         for chunk_id, score in results:
             try:
                 chunk_dict = self._load_chunk(norm_domain, chunk_id)
@@ -104,5 +108,17 @@ class RetrievalManager:
                 evidences.append(ev)
             except FileNotFoundError:
                 # Skip missing chunks – should not happen in a consistent store
+                missing_chunks += 1
+                logger.info(
+                    "evidence_diag drop stage=local_chunk_resolution chunk_id=%s "
+                    "reason=invalid_schema",
+                    chunk_id,
+                )
                 continue
+        logger.info(
+            "evidence_diag local_retrieval returned=%d built=%d dropped_missing_chunks=%d",
+            len(results),
+            len(evidences),
+            missing_chunks,
+        )
         return evidences

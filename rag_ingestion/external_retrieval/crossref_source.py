@@ -28,6 +28,9 @@ SCHOLARLY_METADATA_AUTHORITY_SCORE = 8.0
 
 
 class CrossrefSource(BaseExternalSource):
+    search_capable = True
+    returns_full_text = False
+    supports_temporal_filtering = True
     """Concrete external source for the Crossref Works API."""
 
     def __init__(self, timeout: int = 30) -> None:
@@ -175,7 +178,7 @@ class CrossrefSource(BaseExternalSource):
                 self.base_url,
                 params=params,
                 headers={"User-Agent": "MERIDIAN/1.0 (evidence retrieval)"},
-                timeout=self.timeout,
+                timeout=self.request_timeout(),
             )
             response.raise_for_status()
             data = response.json()

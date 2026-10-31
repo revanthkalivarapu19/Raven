@@ -163,3 +163,43 @@ def test_multi_word_phrase_spacing_is_preserved():
 
     assert any("World Health Organization" in query for query in queries)
     assert all("WorldHealthOrganization" not in query for query in queries)
+
+
+def test_invented_year_is_rejected_and_regenerated():
+    build_queries, service = _load_query_builder([
+        {"queries": ["Reserve Bank 2023", "repo rate reduced", "0.50% Friday"]},
+        {"queries": [
+            "Reserve Bank repo rate",
+            "repo rate reduced 0.50%",
+            "Reserve Bank Friday",
+        ]},
+    ])
+    claim = "The Reserve Bank of India reduced the repo rate by 0.50% on Friday."
+    queries = build_queries(claim, claim, "finance")
+
+    assert len(service.calls) == 2
+    assert "2023" not in " ".join(queries)
+    assert "ungrounded numeric/date" in service.calls[1]
+    _assert_grounded(queries, claim)
+
+
+def test_explicit_weekday_is_preserved_in_at_least_one_query():
+    build_queries, service = _load_query_builder([
+        {"queries": [
+            "Reserve Bank repo rate",
+            "repo rate reduced 0.50%",
+            "Reserve Bank reduced rate",
+        ]},
+        {"queries": [
+            "Reserve Bank repo rate on Friday",
+            "repo rate reduced 0.50%",
+            "Reserve Bank reduced rate",
+        ]},
+    ])
+    claim = "The Reserve Bank reduced the repo rate by 0.50% on Friday."
+
+    queries = build_queries(claim, claim, "finance")
+
+    assert len(service.calls) == 2
+    assert any("on Friday" in query for query in queries)
+    assert "temporal information was omitted" in service.calls[1]

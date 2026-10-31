@@ -61,7 +61,7 @@ def execute_pipeline(
     Adheres strictly to the 3-attempt maximum retry rule.
     """
     print("\n" + "=" * 70)
-    print("       MULTI-AGENT VERIFICATION PIPELINE (Ollama / llama3.1)")
+    print("       MULTI-AGENT VERIFICATION PIPELINE (Ollama / qwen2.5:3b)")
     print("=" * 70)
     print(f"Claim: \"{claim}\"")
     print(f"Domain: {domain}")

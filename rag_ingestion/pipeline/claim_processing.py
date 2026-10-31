@@ -1,5 +1,6 @@
 import gc
 import logging
+import os
 from typing import List, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -20,15 +21,20 @@ from rag_ingestion.retrieval.evidence_fusion import EvidenceFusionManager
 from rag_ingestion.external_retrieval.source_schema import ExternalEvidence
 from rag_ingestion.external_retrieval.web_retriever import WebRetrievalResult, WebSourceRetriever
 from rag_ingestion.verification.verification_manager import EvidenceVerificationManager
+from rag_ingestion.verification.claim_scope import ClaimScope
 from rag_ingestion.retrieval.evidence_schema import Evidence
 from rag_ingestion.verification.verification_schema import OverallVerification
 from rag_ingestion.verification.verification_schema import VerificationFailure
 from rag_ingestion.config.domains import canonical_domain
 from rag_ingestion.config.config import config as _config  # Loads .env before providers access environment variables.
+from rag_ingestion.utils.temporal_context import build_temporal_context
+from rag_ingestion.llm_resilience import remaining_request_budget
 
 logger = logging.getLogger(__name__)
 
 MAX_RETRIEVAL_QUERIES_PER_ATTEMPT = 4
+MIN_RETRIEVAL_BUDGET_SECONDS = 1.0
+MAX_SNIPPET_UPGRADES_PER_ATTEMPT = 3
 
 
 def _canonical_url(url: str) -> Optional[str]:
@@ -54,6 +60,33 @@ def _meaningful(value: object) -> bool:
         "no content available.",
         "no textual summary available.",
     }
+
+
+def _evidence_drop_reason(exc: Exception) -> str:
+    """Classify an evidence rejection without logging potentially sensitive text."""
+    message = str(exc).casefold()
+    if "empty" in message or "whitespace" in message:
+        return "empty_content"
+    if "unsupported" in message and "url" in message:
+        return "unsupported_source"
+    if "url" in message and "missing" in message:
+        return "missing_url"
+    if "too short" in message or "quality" in message:
+        return "low_quality"
+    if "historical" in message or "timeframe" in message or "temporal" in message:
+        return "temporal_mismatch"
+    if "unsupported" in message or "source" in message:
+        return "unsupported_source"
+    if (
+        "schema" in message
+        or "validation" in message
+        or "invalid" in message
+        or type(exc).__name__ == "ValidationError"
+    ):
+        return "invalid_schema"
+    if "deadline" in message or "timeout" in message:
+        return "deadline_guard"
+    return "other"
 
 
 def _api_evidence_is_sufficient(evidence: List[ExternalEvidence], minimum: int) -> bool:
@@ -156,9 +189,24 @@ class ClaimProcessingPipeline:
     @staticmethod
     def _default_external_manager() -> ExternalSourceManager:
         manager = ExternalSourceManager()
-        manager.register(GDELTSource())
-        manager.register(NewsAPISource())
-        manager.register(FactCheckSource())
+        if os.getenv("NEWS_API_KEY", "").strip():
+            manager.register(NewsAPISource())
+        else:
+            logger.info("Provider news_api disabled because API key is unavailable")
+
+        enable_gdelt = os.getenv("ENABLE_GDELT", "false").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        if enable_gdelt:
+            manager.register(GDELTSource(max_retries=0))
+        else:
+            logger.info("Provider gdelt disabled by configuration")
+
+        if os.getenv("GOOGLE_FACTCHECK_API_KEY", "").strip():
+            manager.register(FactCheckSource())
+        else:
+            logger.info("Provider fact_check disabled because API key is unavailable")
+
         manager.register(EuropePMCSource())
         manager.register(CrossrefSource())
         manager.register(WikimediaSource())
@@ -167,29 +215,116 @@ class ClaimProcessingPipeline:
         return manager
 
     def _release_retrieval_resources(self) -> None:
-        """Release embedding model state before handing off to Ollama."""
-        embedders = []
-        embedder = getattr(self.retrieval_manager, "embedder", None)
-        if embedder is not None:
-            embedders.append(embedder)
-        query_service = getattr(self.retrieval_manager, "query_service", None)
-        query_embedder = getattr(query_service, "embedder", None)
-        if query_embedder is not None:
-            embedders.append(query_embedder)
+        """Retain the process-level embedding model for subsequent attempts."""
+        return None
 
-        seen = set()
-        for candidate in embedders:
-            if id(candidate) in seen:
+    def _upgrade_metadata_snippets(
+        self,
+        claim: str,
+        evidence_items: List[Evidence],
+        max_fetches: int = MAX_SNIPPET_UPGRADES_PER_ATTEMPT,
+        excluded_urls: Optional[set[str]] = None,
+    ) -> List[Evidence]:
+        """Fetch full page text for a bounded set of top-ranked external snippets."""
+        max_fetches = min(max_fetches, MAX_SNIPPET_UPGRADES_PER_ATTEMPT)
+        if max_fetches <= 0:
+            return evidence_items
+        candidates = [
+            item
+            for item in evidence_items
+            if item.retrieval_method == "external"
+            and (item.metadata or {}).get("content_quality") == "metadata_or_snippet"
+        ]
+        if not candidates:
+            return evidence_items
+
+        if isinstance(self.fusion_manager, EvidenceFusionManager):
+            ranked = self.fusion_manager.fuse(
+                local_evidence=[],
+                external_evidence=candidates,
+                top_k=len(candidates),
+                claim=claim,
+            )
+        else:
+            ranked = candidates
+
+        selected: dict[str, tuple[str, Evidence]] = {}
+        for item in ranked:
+            canonical_url = _canonical_url(item.url) if item.url else None
+            if canonical_url is None:
+                logger.info(
+                    "evidence_diag page_upgrade_skip evidence_id=%s reason=missing_url",
+                    item.evidence_id,
+                )
                 continue
-            seen.add(id(candidate))
-            if hasattr(candidate, "_model"):
-                candidate._model = None
-            if hasattr(candidate, "_dimension"):
-                candidate._dimension = None
-        gc.collect()
+            if excluded_urls and canonical_url in excluded_urls:
+                logger.info(
+                    "evidence_diag page_upgrade_skip evidence_id=%s "
+                    "reason=previous_fetch_attempt",
+                    item.evidence_id,
+                )
+                continue
+            selected.setdefault(canonical_url, (canonical_url, item))
+            if len(selected) >= max_fetches:
+                break
+
+        upgraded: dict[str, Evidence] = {}
+        for canonical_url, item in selected.values():
+            remaining = remaining_request_budget()
+            if remaining is not None and remaining <= MIN_RETRIEVAL_BUDGET_SECONDS:
+                logger.info(
+                    "evidence_diag page_upgrade_skip evidence_id=%s reason=deadline_guard",
+                    item.evidence_id,
+                )
+                break
+
+            try:
+                result = self.web_retriever.retrieve(canonical_url)
+            except Exception as exc:
+                logger.info(
+                    "evidence_diag page_upgrade_fallback evidence_id=%s "
+                    "reason=fetch_exception exception_type=%s",
+                    item.evidence_id,
+                    type(exc).__name__,
+                )
+                continue
+            text = (result.text or "").strip()
+            minimum_length = max(50, self.normalizer.min_text_length)
+            if (
+                result.error
+                or not _meaningful(text)
+                or len(text) < minimum_length
+            ):
+                logger.info(
+                    "evidence_diag page_upgrade_fallback evidence_id=%s "
+                    "reason=%s",
+                    item.evidence_id,
+                    "fetch_failed" if result.error else "empty_or_short_content",
+                )
+                continue
+
+            metadata = dict(item.metadata or {})
+            metadata["content_quality"] = "source_text"
+            metadata["full_page_extracted"] = True
+            metadata["full_page_url"] = result.final_url or canonical_url
+            upgraded[item.evidence_id] = item.model_copy(
+                update={
+                    "text": text,
+                    "url": canonical_url,
+                    "metadata": metadata,
+                }
+            )
+            logger.info(
+                "evidence_diag page_upgrade_success evidence_id=%s text_chars=%d",
+                item.evidence_id,
+                len(text),
+            )
+
+        return [upgraded.get(item.evidence_id, item) for item in evidence_items]
 
     def _retrieve_query(
         self,
+        claim: str,
         query: str,
         domain: str,
         top_k_local: int,
@@ -198,6 +333,7 @@ class ClaimProcessingPipeline:
         fallback_urls_remaining: list[int] | None = None,
     ) -> tuple[List[Evidence], List[Evidence], Optional[ProviderError], List[ProviderError]]:
         """Retrieve and normalize one query without fusion or verification."""
+        logger.info("evidence_diag query=%r", query)
         local_error = None
         try:
             local_evidence = self.retrieval_manager.search(
@@ -207,10 +343,46 @@ class ClaimProcessingPipeline:
             logger.warning("Local retrieval unavailable for domain %s: %s", domain, exc)
             local_evidence = []
             local_error = ProviderError(provider_name="local_retrieval", exception=exc)
+            logger.info(
+                "evidence_diag retrieval_exception stage=local provider=local_retrieval "
+                "reason=other exception_type=%s",
+                type(exc).__name__,
+            )
 
-        external_result = self.external_manager.search(
-            query=query, domain=domain, top_k=top_k_external
+        external_kwargs = {"query": query, "domain": domain, "top_k": top_k_external}
+        if isinstance(self.external_manager, ExternalSourceManager):
+            external_kwargs["temporal_context"] = build_temporal_context(claim, [])
+        try:
+            external_result = self.external_manager.search(**external_kwargs)
+        except Exception as exc:
+            logger.info(
+                "evidence_diag retrieval_exception stage=external "
+                "reason=%s exception_type=%s",
+                _evidence_drop_reason(exc),
+                type(exc).__name__,
+            )
+            raise
+        external_raw = getattr(
+            external_result, "raw_result_count", len(external_result.evidence)
         )
+        provider_counts = getattr(external_result, "provider_counts", {})
+        logger.info(
+            "evidence_diag raw_counts query=%r local=%d external=%d "
+            "provider_counts=%s provider_deduplicated=%d",
+            query,
+            len(local_evidence),
+            external_raw,
+            provider_counts,
+            getattr(external_result, "duplicate_count", 0),
+        )
+        for error in external_result.errors:
+            logger.info(
+                "evidence_diag provider_error provider=%s category=%s "
+                "exception_type=%s",
+                getattr(error, "provider_name", "unknown"),
+                getattr(error, "category", "other_failure"),
+                type(getattr(error, "exception", error)).__name__,
+            )
         web_results: dict[str, WebRetrievalResult] = {}
         fallback_urls_seen = fallback_urls_seen if fallback_urls_seen is not None else set()
         fallback_urls_remaining = (
@@ -220,7 +392,7 @@ class ClaimProcessingPipeline:
         )
         if not _api_evidence_is_sufficient(
             external_result.evidence, self.minimum_sufficient_external_evidence
-        ):
+        ) and fallback_urls_remaining[0] > 0:
             candidates = []
             for url_key, api_evidence in _fallback_candidates(external_result.evidence):
                 if url_key not in fallback_urls_seen:
@@ -236,11 +408,19 @@ class ClaimProcessingPipeline:
                         raise RuntimeError(web_result.error or "Web retrieval returned no usable text")
                     web_results[url_key] = web_result
                 except Exception as exc:
+                    logger.info(
+                        "evidence_diag drop stage=web_fallback evidence_id=%s "
+                        "reason=%s exception_type=%s",
+                        api_evidence.evidence_id,
+                        _evidence_drop_reason(exc),
+                        type(exc).__name__,
+                    )
                     external_result.errors.append(
                         ProviderError(provider_name="web_retriever", exception=exc)
                     )
 
         normalized = []
+        normalization_drops = 0
         for item in external_result.evidence:
             try:
                 web_result = _web_result_for_url(item.url, web_results)
@@ -249,14 +429,33 @@ class ClaimProcessingPipeline:
                     if web_result is not None else self.normalizer.normalize(item)
                 )
             except Exception as exc:
+                normalization_drops += 1
+                logger.info(
+                    "evidence_diag drop stage=normalization evidence_id=%s "
+                    "provider=%s reason=%s exception_type=%s",
+                    item.evidence_id,
+                    item.source_type or item.source,
+                    _evidence_drop_reason(exc),
+                    type(exc).__name__,
+                )
                 external_result.errors.append(
                     ProviderError(provider_name="normalizer", exception=exc)
                 )
+        logger.info(
+            "evidence_diag normalized query=%r raw=%d manager_deduplicated=%d "
+            "normalized=%d dropped=%d",
+            query,
+            external_raw,
+            len(external_result.evidence),
+            len(normalized),
+            normalization_drops,
+        )
         return local_evidence, normalized, local_error, list(external_result.errors)
 
     def _process_multiple_queries(
         self, claim: str, domain: str, queries: List[str],
         top_k_local: int, top_k_external: int, top_k_fused: int,
+        claim_scope: ClaimScope | None = None,
     ) -> ClaimProcessingResult:
         local_by_id = {}
         external_by_id = {}
@@ -265,31 +464,106 @@ class ClaimProcessingPipeline:
         normalized_queries = list(dict.fromkeys(
             query.strip() for query in queries if query and query.strip()
         ))[:MAX_RETRIEVAL_QUERIES_PER_ATTEMPT]
+        begin_attempt = getattr(self.external_manager, "begin_attempt", None)
+        if callable(begin_attempt):
+            begin_attempt()
         fallback_urls_seen = set()
-        fallback_urls_remaining = [self.max_web_fallback_urls]
+        fallback_urls_remaining = [
+            min(self.max_web_fallback_urls, MAX_SNIPPET_UPGRADES_PER_ATTEMPT)
+        ]
+        query_evidence_ids: dict[str, set[str]] = {}
         for query in normalized_queries:
+            remaining = remaining_request_budget()
+            if remaining is not None and remaining <= MIN_RETRIEVAL_BUDGET_SECONDS:
+                external_errors.append(ProviderError(
+                    provider_name="retrieval_budget",
+                    exception=RuntimeError("request deadline nearly reached; remaining queries skipped"),
+                    category="timeout",
+                ))
+                break
             local_items, external_items, query_local_error, query_errors = self._retrieve_query(
-                query, domain, top_k_local, top_k_external,
+                claim, query, domain, top_k_local, top_k_external,
                 fallback_urls_seen, fallback_urls_remaining,
             )
+            query_ids = set()
+            local_duplicates = 0
+            external_duplicates = 0
             for item in local_items:
+                query_ids.add(item.evidence_id)
+                if item.evidence_id in local_by_id:
+                    local_duplicates += 1
+                    logger.info(
+                        "evidence_diag drop stage=query_dedup evidence_id=%s "
+                        "reason=duplicate kind=local query=%r",
+                        item.evidence_id,
+                        query,
+                    )
                 local_by_id[item.evidence_id] = item
             for item in external_items:
+                query_ids.add(item.evidence_id)
+                if item.evidence_id in external_by_id:
+                    external_duplicates += 1
+                    logger.info(
+                        "evidence_diag drop stage=query_dedup evidence_id=%s "
+                        "reason=duplicate kind=external query=%r",
+                        item.evidence_id,
+                        query,
+                    )
                 external_by_id[item.evidence_id] = item
+            query_evidence_ids[query] = query_ids
             if local_error is None and query_local_error is not None:
                 local_error = query_local_error
             external_errors.extend(query_errors)
+            logger.info(
+                "evidence_diag query_counts query=%r local_raw=%d external_normalized=%d "
+                "deduped_added=%d local_duplicates=%d external_duplicates=%d",
+                query,
+                len(local_items),
+                len(external_items),
+                len(local_items) + len(external_items)
+                - local_duplicates
+                - external_duplicates,
+                local_duplicates,
+                external_duplicates,
+            )
 
         local_evidence = list(local_by_id.values())
-        external_evidence = list(external_by_id.values())
-        fused_evidence = self.fusion_manager.fuse(
-            local_evidence=local_evidence,
-            external_evidence=external_evidence,
-            top_k=top_k_fused,
+        external_evidence = self._upgrade_metadata_snippets(
+            claim,
+            list(external_by_id.values()),
+            max_fetches=MAX_SNIPPET_UPGRADES_PER_ATTEMPT - len(fallback_urls_seen),
+            excluded_urls=fallback_urls_seen,
+        )
+        logger.info(
+            "evidence_diag cross_query_deduped local=%d external=%d combined=%d",
+            len(local_evidence),
+            len(external_evidence),
+            len(local_evidence) + len(external_evidence),
+        )
+        fusion_kwargs = {"local_evidence": local_evidence, "external_evidence": external_evidence, "top_k": top_k_fused}
+        if isinstance(self.fusion_manager, EvidenceFusionManager):
+            fusion_kwargs["claim"] = claim
+            fusion_kwargs["domain"] = domain
+        fused_evidence = self.fusion_manager.fuse(**fusion_kwargs)
+        fused_ids = {item.evidence_id for item in fused_evidence}
+        for query, query_ids in query_evidence_ids.items():
+            logger.info(
+                "evidence_diag query_fusion query=%r distinct_ids=%d fused_ranked=%d "
+                "final=%d",
+                query,
+                len(query_ids),
+                len(query_ids & fused_ids),
+                len(fused_evidence),
+            )
+        logger.info(
+            "evidence_diag final_before_verification local=%d external=%d fused=%d",
+            len(local_evidence),
+            len(external_evidence),
+            len(fused_evidence),
         )
         self._release_retrieval_resources()
         verification_result, verification_failure = self._verify_once(
-            claim, fused_evidence
+            claim, fused_evidence, claim_scope=claim_scope
         )
         return ClaimProcessingResult(
             claim=claim,
@@ -304,17 +578,31 @@ class ClaimProcessingPipeline:
         )
 
     def _verify_once(
-        self, claim: str, fused_evidence: List[Evidence]
+        self, claim: str, fused_evidence: List[Evidence],
+        claim_scope: ClaimScope | None = None,
     ) -> tuple[Optional[OverallVerification], Optional[VerificationFailure]]:
         """Run one bounded verification operation and validate its contract."""
+        logger.info(
+            "evidence_diag verifier_called=yes evidence_count=%d model_request=%s",
+            len(fused_evidence),
+            "yes" if fused_evidence else "no",
+        )
         try:
-            result = self.verification_manager.verify(
-                claim=claim, evidence_list=fused_evidence
-            )
+            verification_kwargs = {
+                "claim": claim, "evidence_list": fused_evidence,
+            }
+            if claim_scope:
+                verification_kwargs["claim_scope"] = claim_scope
+            result = self.verification_manager.verify(**verification_kwargs)
             if not isinstance(result, OverallVerification):
                 raise TypeError("verification manager returned an invalid result")
+            logger.info("evidence_diag verifier_completed=yes")
             return result, None
         except Exception as exc:
+            logger.info(
+                "evidence_diag verifier_completed=no exception_type=%s",
+                type(exc).__name__,
+            )
             logger.error("Verification failed: %s", exc)
             return None, VerificationFailure.from_exception(
                 claim=claim, evidence_count=len(fused_evidence), exc=exc
@@ -329,6 +617,7 @@ class ClaimProcessingPipeline:
         top_k_fused: int = 5,
         retrieval_query: str | None = None,
         retrieval_queries: List[str] | None = None,
+        claim_scope: ClaimScope | None = None,
     ) -> ClaimProcessingResult:
         """Execute the full pipeline and return a structured result.
 
@@ -348,6 +637,7 @@ class ClaimProcessingPipeline:
                 top_k_local=top_k_local,
                 top_k_external=top_k_external,
                 top_k_fused=top_k_fused,
+                claim_scope=claim_scope,
             )
         retrieval_query = (retrieval_query or claim).strip()
 
@@ -355,6 +645,7 @@ class ClaimProcessingPipeline:
             "Evidence retrieval query: %s",
             retrieval_query,
         )
+        logger.info("evidence_diag query=%r", retrieval_query)
 
         # 1. Local retrieval
         local_retrieval_error: Optional[ProviderError] = None
@@ -372,11 +663,32 @@ class ClaimProcessingPipeline:
                 exception=exc,
             )
         logger.debug("Local retrieval returned %d items", len(local_evidence))
+        logger.info("evidence_diag local_raw query=%r count=%d", retrieval_query, len(local_evidence))
 
         # 2. External retrieval
-        external_result: ExternalSourceResult = self.external_manager.search(
-            query=retrieval_query, domain=domain, top_k=top_k_external
+        external_kwargs = {"query": retrieval_query, "domain": domain, "top_k": top_k_external}
+        if isinstance(self.external_manager, ExternalSourceManager):
+            external_kwargs["temporal_context"] = build_temporal_context(claim, [])
+        external_result: ExternalSourceResult = self.external_manager.search(**external_kwargs)
+        external_raw = getattr(
+            external_result, "raw_result_count", len(external_result.evidence)
         )
+        logger.info(
+            "evidence_diag external_raw query=%r count=%d provider_counts=%s "
+            "provider_deduplicated=%d",
+            retrieval_query,
+            external_raw,
+            getattr(external_result, "provider_counts", {}),
+            getattr(external_result, "duplicate_count", 0),
+        )
+        for error in external_result.errors:
+            logger.info(
+                "evidence_diag provider_error provider=%s category=%s "
+                "exception_type=%s",
+                getattr(error, "provider_name", "unknown"),
+                getattr(error, "category", "other_failure"),
+                type(getattr(error, "exception", error)).__name__,
+            )
         logger.debug(
             "External retrieval returned %d items with %d errors",
             len(external_result.evidence),
@@ -385,16 +697,27 @@ class ClaimProcessingPipeline:
 
         # 3. If API evidence is insufficient, fetch a bounded set of API-provided URLs.
         web_results: dict[str, WebRetrievalResult] = {}
+        web_fetch_attempted: set[str] = set()
         if not _api_evidence_is_sufficient(
             external_result.evidence,
             self.minimum_sufficient_external_evidence,
         ):
             candidates = _fallback_candidates(external_result.evidence)
-            for url_key, api_evidence in candidates[: self.max_web_fallback_urls]:
+            for url_key, api_evidence in candidates[
+                : min(self.max_web_fallback_urls, MAX_SNIPPET_UPGRADES_PER_ATTEMPT)
+            ]:
+                web_fetch_attempted.add(url_key)
                 try:
                     web_result = self.web_retriever.retrieve(api_evidence.url)
                 except Exception as exc:
-                    logger.warning("Web fallback failed for %s: %s", api_evidence.url, exc)
+                    logger.info(
+                        "evidence_diag drop stage=web_fallback evidence_id=%s "
+                        "reason=%s exception_type=%s",
+                        api_evidence.evidence_id,
+                        _evidence_drop_reason(exc),
+                        type(exc).__name__,
+                    )
+                    logger.warning("Web fallback failed (%s)", type(exc).__name__)
                     external_result.errors.append(
                         ProviderError(provider_name="web_retriever", exception=exc)
                     )
@@ -404,7 +727,14 @@ class ClaimProcessingPipeline:
                     error = RuntimeError(
                         web_result.error or "Web retrieval returned no usable text"
                     )
-                    logger.warning("Web fallback failed for %s: %s", api_evidence.url, error)
+                    logger.info(
+                        "evidence_diag drop stage=web_fallback evidence_id=%s "
+                        "reason=%s exception_type=%s",
+                        api_evidence.evidence_id,
+                        _evidence_drop_reason(error),
+                        type(error).__name__,
+                    )
+                    logger.warning("Web fallback returned no usable text")
                     external_result.errors.append(
                         ProviderError(provider_name="web_retriever", exception=error)
                     )
@@ -422,26 +752,58 @@ class ClaimProcessingPipeline:
                     norm_ev = self.normalizer.normalize(ev, web_result=web_result)
                 normalized_external.append(norm_ev)
             except Exception as exc:
+                logger.info(
+                    "evidence_diag drop stage=normalization evidence_id=%s "
+                    "provider=%s reason=%s exception_type=%s",
+                    ev.evidence_id,
+                    ev.source_type or ev.source,
+                    _evidence_drop_reason(exc),
+                    type(exc).__name__,
+                )
                 # Normalisation errors are treated as provider‑level failures.
                 logger.warning(
-                    "Normalization failed for external evidence %s: %s", ev.evidence_id, exc
+                    "Normalization failed for external evidence %s (%s)",
+                    ev.evidence_id,
+                    type(exc).__name__,
                 )
                 external_result.errors.append(
                     ProviderError(provider_name="normalizer", exception=exc)
                 )
+        logger.info(
+            "evidence_diag normalized query=%r raw=%d manager_deduplicated=%d "
+            "normalized=%d dropped=%d",
+            retrieval_query,
+            external_raw,
+            len(external_result.evidence),
+            len(normalized_external),
+            len(external_result.evidence) - len(normalized_external),
+        )
+        normalized_external = self._upgrade_metadata_snippets(
+            claim,
+            normalized_external,
+            max_fetches=MAX_SNIPPET_UPGRADES_PER_ATTEMPT
+            - len(web_fetch_attempted),
+            excluded_urls=web_fetch_attempted,
+        )
 
         # 5. Fusion
-        fused_evidence: List[Evidence] = self.fusion_manager.fuse(
-            local_evidence=local_evidence,
-            external_evidence=normalized_external,
-            top_k=top_k_fused,
-        )
+        fusion_kwargs = {"local_evidence": local_evidence, "external_evidence": normalized_external, "top_k": top_k_fused}
+        if isinstance(self.fusion_manager, EvidenceFusionManager):
+            fusion_kwargs["claim"] = claim
+            fusion_kwargs["domain"] = domain
+        fused_evidence: List[Evidence] = self.fusion_manager.fuse(**fusion_kwargs)
         logger.debug("Fusion produced %d items", len(fused_evidence))
+        logger.info(
+            "evidence_diag final_before_verification local=%d external=%d fused=%d",
+            len(local_evidence),
+            len(normalized_external),
+            len(fused_evidence),
+        )
 
         # 6. Verification – only the fused evidence are examined
         self._release_retrieval_resources()
         verification_result, verification_failure = self._verify_once(
-            claim, fused_evidence
+            claim, fused_evidence, claim_scope=claim_scope
         )
 
         return ClaimProcessingResult(

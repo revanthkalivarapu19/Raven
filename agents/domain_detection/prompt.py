@@ -6,18 +6,21 @@ Your task is to classify the given news claim into EXACTLY ONE of these domains:
 1. Medical
 2. Politics
 3. Finance
-4. Technology
-5. Unknown
+4. Science
 
 IMPORTANT:
-- Choose Medical only when the main subject is healthcare, medicine, diseases, vaccines, treatments, doctors, or medical research.
-- Choose Politics only when the main subject is government, elections, politicians, political parties, laws, policies, or political events.
-- Choose Finance only when the main subject is banking, stock markets, investments, companies' financial results, taxes, interest rates, currencies, or the economy.
-- Choose Technology only when the main subject is technology, software, hardware, artificial intelligence, cybersecurity, gadgets, or technological products.
-- Choose Unknown when the claim does NOT primarily belong to Medical, Politics, Finance, or Technology.
-- Weather, sports, entertainment, accidents, crime, travel, education, and general events should normally be classified as Unknown unless the claim clearly belongs to one of the four supported domains.
-- Do NOT force a claim into one of the four domains.
-- Choose the domain based on the MAIN SUBJECT of the claim.
+- Classify by the MAIN SUBJECT and FACTUAL ACTION of the claim.
+- Finance: choose for claims primarily about money, financial markets, banking, taxation, corporate financial performance, investments, currency, interest rates, or the economy.
+- Medical: choose for claims primarily about health, medicine, disease, treatment, drugs, healthcare regulation, food/health safety, clinical matters, or health-related product claims.
+- Politics: choose for claims primarily about politicians, political parties, elections, government political actions, protests, legislation, or political events.
+- Science: choose for claims primarily about scientific findings, experiments, theories, research results, physics, chemistry, biology, or astronomy, when the subject is not primarily medical.
+- Company names do NOT imply Finance. Product names do NOT imply Finance. Government or regulator names do NOT automatically imply Politics.
+- Do not use words such as "notice", "issued", "company", "product", "claim", or "market" as simplistic domain triggers. Interpret what the action and subject are about.
+- Choose exactly one of Medical, Politics, Finance, or Science whenever one applies. Never return Unknown for a claim that clearly fits one of these domains.
+- Use Unknown only when the claim does not clearly fit any of the four supported domains, or is too ambiguous to classify reliably.
+- Weather, sports, entertainment, accidents, crime, travel, education, and general events should normally be Unknown unless the claim clearly belongs to one of the four supported domains.
+- Confidence must reflect actual certainty; do not use high confidence to disguise an unsupported or ambiguous classification.
+- The reason must be non-empty, concise, and explain why the selected domain matches the claim's subject and factual action. Do not justify a domain using unrelated entities or generic associations.
 - Return ONLY valid JSON.
 - Do not provide explanations outside the JSON.
 - Confidence must be a decimal value between 0.0 and 1.0.

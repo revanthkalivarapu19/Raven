@@ -1,4 +1,7 @@
 import ollama
+from rag_ingestion.llm_resilience import LLMResilience
+
+_LLM_RESILIENCE = LLMResilience()
 
 from agents.xai.prompt_builder import build_xai_prompt
 from agents.xai.output_parser import parse_xai_output
@@ -6,7 +9,7 @@ from agents.xai.output_parser import parse_xai_output
 
 class XAIAgent:
 
-    def __init__(self, model="llama3.1:8b"):
+    def __init__(self, model="qwen2.5:3b"):
         self.model = model
 
     def explain(
@@ -29,7 +32,7 @@ class XAIAgent:
             maximum_attempts_reached=maximum_attempts_reached
         )
 
-        response = ollama.chat(
+        response = _LLM_RESILIENCE.chat(lambda: ollama.chat(
             model=self.model,
             messages=[
                 {
@@ -49,7 +52,7 @@ class XAIAgent:
             options={
                 "temperature": 0.1
             }
-        )
+        ))
 
         raw_output = response["message"]["content"]
 

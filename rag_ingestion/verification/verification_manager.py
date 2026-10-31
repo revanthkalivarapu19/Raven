@@ -4,6 +4,7 @@ from typing import List
 from ..retrieval.evidence_schema import Evidence
 from .ollama_verifier import verify_evidence, OllamaUnavailableError
 from .verification_schema import VerificationResult, OverallVerification
+from .claim_scope import ClaimScope, classify_claim_scope, verification_can_establish_claim
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,8 @@ class EvidenceVerificationManager:
     """Manager orchestrating verification of multiple evidence items.
 
      The aggregation logic follows deterministic rules:
-     * If any SUPPORTS with confidence >= 0.7 and any CONTRADICTS with confidence >= 0.7,
+     * If any scope-eligible SUPPORTS with confidence >= 0.7 and any
+       scope-eligible CONTRADICTS with confidence >= 0.7,
        overall assessment is ``CONFLICTING_EVIDENCE``.
      * Else if any CONTRADICTS with confidence >= 0.7 (and no strong SUPPORTS),
        overall assessment is ``CONTRADICTED``.
@@ -27,7 +29,11 @@ class EvidenceVerificationManager:
         self.model = model
         self.timeout = timeout
 
-    def verify(self, claim: str, evidence_list: List[Evidence]) -> OverallVerification:
+    def verify(
+        self, claim: str, evidence_list: List[Evidence], *,
+        claim_scope: ClaimScope | None = None,
+    ) -> OverallVerification:
+        claim_scope = claim_scope or classify_claim_scope(claim)
         results: List[VerificationResult] = []
         for ev in evidence_list:
             try:
@@ -41,8 +47,16 @@ class EvidenceVerificationManager:
                 raise
 
         # Aggregation
-        supports = [r for r in results if r.relationship == "SUPPORTS"]
-        contradicts = [r for r in results if r.relationship == "CONTRADICTS"]
+        supports = [
+            r for r in results
+            if r.relationship == "SUPPORTS"
+            and verification_can_establish_claim(r, claim_scope)
+        ]
+        contradicts = [
+            r for r in results
+            if r.relationship == "CONTRADICTS"
+            and verification_can_establish_claim(r, claim_scope)
+        ]
         insufficient = [r for r in results if r.relationship == "INSUFFICIENT"]
 
         def avg_confidence(items: List[VerificationResult]) -> float:
@@ -53,10 +67,10 @@ class EvidenceVerificationManager:
 
         # Determine overall assessment
         has_strong_supports = any(
-            r.relationship == "SUPPORTS" and r.confidence >= 0.7 for r in results
+            r.confidence >= 0.7 for r in supports
         )
         has_strong_contradicts = any(
-            r.relationship == "CONTRADICTS" and r.confidence >= 0.7 for r in results
+            r.confidence >= 0.7 for r in contradicts
         )
 
         if has_strong_supports and has_strong_contradicts:
@@ -72,6 +86,7 @@ class EvidenceVerificationManager:
 
         overall = OverallVerification(
             claim=claim,
+            claim_scope=claim_scope,
             results=results,
             overall_assessment=overall_assessment,
             overall_confidence=overall_confidence,

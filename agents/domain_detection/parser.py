@@ -55,6 +55,13 @@ def parse_response(response: str) -> dict:
 
         parsed = json.loads(cleaned_response)
 
+        # Accept the common semantic alias while keeping the public Raven
+        # domain vocabulary canonical.
+        if isinstance(parsed, dict):
+            domain = parsed.get("domain")
+            if isinstance(domain, str) and domain.strip().casefold() == "medicine":
+                parsed = {**parsed, "domain": "Medical"}
+
         logger.success("Response parsed successfully.")
 
         return parsed

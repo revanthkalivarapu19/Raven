@@ -7,6 +7,8 @@ Validates the response returned by the Domain Detection Agent.
 from pydantic import BaseModel, Field, ValidationError
 from typing import Literal
 
+SUPPORTED_DOMAINS = ("Medical", "Politics", "Finance", "Science")
+
 
 class DomainResponse(BaseModel):
     """
@@ -17,7 +19,7 @@ class DomainResponse(BaseModel):
         "Medical",
         "Politics",
         "Finance",
-        "Technology",
+        "Science",
         "Unknown"
     ]
 
@@ -26,16 +28,19 @@ class DomainResponse(BaseModel):
     reason: str
 
 
-def validate_response(response: dict) -> bool:
+def validate_response(response: object) -> bool:
     """
     Validate the LLM response using Pydantic.
     """
 
-    try:
-        DomainResponse(**response)
-        return True
+    if not isinstance(response, dict):
+        return False
 
-    except ValidationError as e:
+    try:
+        validated = DomainResponse(**response)
+        return bool(validated.reason.strip())
+
+    except (ValidationError, TypeError) as e:
         print("\nValidation Error:")
         print(e)
         return False

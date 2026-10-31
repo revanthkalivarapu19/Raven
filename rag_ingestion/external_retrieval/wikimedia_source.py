@@ -28,6 +28,8 @@ ENCYCLOPEDIC_AUTHORITY_SCORE = 5.5
 
 
 class WikimediaSource(BaseExternalSource):
+    search_capable = True
+    returns_full_text = True
     """Concrete external source for anonymous Wikimedia search and page data."""
 
     def __init__(self, timeout: int = 30) -> None:
@@ -68,7 +70,7 @@ class WikimediaSource(BaseExternalSource):
                 self.base_url,
                 params=params,
                 headers={"User-Agent": "MERIDIAN/1.0 (evidence retrieval)"},
-                timeout=self.timeout,
+                timeout=self.request_timeout(),
             )
             response.raise_for_status()
             data = response.json()
@@ -203,4 +205,4 @@ class WikimediaSource(BaseExternalSource):
                 )
             )
         return results
-    supported_domains = frozenset({"medical", "political", "science", "finance", "general"})
+    supported_domains = frozenset({"general"})

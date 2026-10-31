@@ -13,7 +13,7 @@ This agent enables the system to route the claim to the appropriate expert and e
 - Medical
 - Politics
 - Finance
-- Technology
+- Science
 
 ---
 

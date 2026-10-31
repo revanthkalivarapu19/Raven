@@ -48,18 +48,18 @@ TEST_CLAIMS = [
         "expected_domain": "Finance"
     },
 
-    # Technology
+    # Science
     {
-        "claim": "Google launched its latest Gemini AI model.",
-        "expected_domain": "Technology"
+        "claim": "Researchers observed a new exoplanet using a space telescope.",
+        "expected_domain": "Science"
     },
     {
-        "claim": "Microsoft released a major Windows security update.",
-        "expected_domain": "Technology"
+        "claim": "Scientists reproduced the experiment in an independent laboratory.",
+        "expected_domain": "Science"
     },
     {
-        "claim": "OpenAI introduced a new multimodal language model.",
-        "expected_domain": "Technology"
+        "claim": "A new study describes a previously unknown species of bacteria.",
+        "expected_domain": "Science"
     }
 
 ]

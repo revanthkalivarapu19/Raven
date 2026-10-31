@@ -27,6 +27,9 @@ MAX_PAGE_SIZE = 20
 
 
 class IPUParlineSource(BaseExternalSource):
+    search_capable = True
+    returns_full_text = False
+    supports_temporal_filtering = True
     """Retrieve bounded observations from the official IPU Parline API."""
 
     def __init__(self, timeout: int = 30, max_page_size: int = MAX_PAGE_SIZE) -> None:
@@ -167,7 +170,7 @@ class IPUParlineSource(BaseExternalSource):
                 endpoint,
                 params=params,
                 headers={"Accept": "application/json", "User-Agent": "MERIDIAN/1.0 (IPU Parline provider)"},
-                timeout=self.timeout,
+                timeout=self.request_timeout(),
             )
             response.raise_for_status()
             payload = response.json()

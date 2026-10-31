@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from typing import List, Optional, FrozenSet
 
 from .source_schema import ExternalEvidence
+from rag_ingestion.llm_resilience import remaining_request_budget
 
 
 class BaseExternalSource(ABC):
@@ -15,6 +16,23 @@ class BaseExternalSource(ABC):
     name: str
     # None means the provider is intentionally general-purpose.
     supported_domains: Optional[FrozenSet[str]] = None
+    # Providers that cannot search an explicitly historical period can opt out.
+    supports_historical: bool = True
+    # Capability metadata used for selection and diagnostics.
+    search_capable: bool = True
+    fetch_only: bool = False
+    returns_full_text: bool = False
+    news_capable: bool = False
+    supports_temporal_filtering: bool = False
+    requires_authentication: bool = False
+
+    def request_timeout(self) -> float:
+        """Return this provider's timeout bounded by the active request deadline."""
+        configured = float(getattr(self, "timeout", 30.0))
+        remaining = remaining_request_budget()
+        if remaining is None:
+            return configured
+        return max(0.001, min(configured, remaining))
 
     @abstractmethod
     def search(

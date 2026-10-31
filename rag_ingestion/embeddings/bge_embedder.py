@@ -4,6 +4,7 @@ The model is loaded lazily and respects the configured batch size.
 """
 
 from typing import List
+import threading
 import numpy as np
 
 # Optional import of SentenceTransformer; load failure is explicit in _load_model.
@@ -20,6 +21,11 @@ class BGEModelLoadError(RuntimeError):
     """Raised when the configured BGE model cannot be loaded."""
 
 
+_MODEL_CACHE = {}
+_MODEL_CACHE_LOCK = threading.Lock()
+BGE_INITIALIZATION_COUNT = 0
+
+
 class BGEEmbedder(BaseEmbedder):
     """Embedder for BGE large model.
 
@@ -29,12 +35,26 @@ class BGEEmbedder(BaseEmbedder):
 
     def _load_model(self):
         """Load the configured BGE model or fail explicitly."""
+        global BGE_INITIALIZATION_COUNT
         try:
             if SentenceTransformer is None:
                 raise ImportError("SentenceTransformer not installed")
 
-            # Attempt to instantiate the real model
-            model = SentenceTransformer(config.embedding_model, device="cpu")
+            cache_key = (
+                config.embedding_model,
+                config.embedding_local_files_only,
+                id(SentenceTransformer),
+            )
+            with _MODEL_CACHE_LOCK:
+                model = _MODEL_CACHE.get(cache_key)
+                if model is None:
+                    model = SentenceTransformer(
+                        config.embedding_model,
+                        device="cpu",
+                        local_files_only=config.embedding_local_files_only,
+                    )
+                    _MODEL_CACHE[cache_key] = model
+                    BGE_INITIALIZATION_COUNT += 1
 
             # Verify interface
             if not callable(getattr(model, "encode", None)) or not callable(getattr(model, "get_sentence_embedding_dimension", None)):
@@ -42,7 +62,8 @@ class BGEEmbedder(BaseEmbedder):
             self._model = model
         except Exception as exc:
             raise BGEModelLoadError(
-                f"Unable to load embedding model '{config.embedding_model}': {exc}"
+                f"Unable to load embedding model '{config.embedding_model}'"
+                f" (local_files_only={config.embedding_local_files_only}): {exc}"
             ) from exc
         # Dimension will be set by BaseEmbedder after loading
 

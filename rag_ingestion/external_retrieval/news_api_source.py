@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 
 class NewsAPISource(BaseExternalSource):
+    search_capable = True
+    returns_full_text = False
+    news_capable = True
+    supports_temporal_filtering = True
+    requires_authentication = True
     """External news discovery provider using the NewsAPI /v2/everything endpoint."""
 
     supported_domains = frozenset(
@@ -63,7 +68,7 @@ class NewsAPISource(BaseExternalSource):
                 self.base_url,
                 params=params,
                 headers=headers,
-                timeout=self.timeout,
+                timeout=self.request_timeout(),
             )
             response.raise_for_status()
             data = response.json()

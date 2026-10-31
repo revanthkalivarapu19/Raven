@@ -59,6 +59,7 @@ class ConfigLoader:
         # Pipeline Configuration Defaults
         self.max_file_size_bytes = int(self.get_env("MAX_FILE_SIZE_BYTES", str(50 * 1024 * 1024))) # 50 MB
         self.timeout_seconds = int(self.get_env("TIMEOUT_SECONDS", "30"))
+        self.request_deadline_seconds = float(self.get_env("REQUEST_DEADLINE_SECONDS", "300"))
         self.retry_count = int(self.get_env("RETRY_COUNT", "3"))
         self.supported_document_types = ["html", "pdf", "txt", "md", "htm"]
         self.max_concurrency = int(self.get_env("MAX_CONCURRENCY", "10"))
@@ -77,6 +78,14 @@ class ConfigLoader:
         self.embedding_model = self.get_env("EMBEDDING_MODEL", "BAAI/bge-large-en-v1.5")
         self.embedding_batch_size = int(self.get_env("EMBEDDING_BATCH_SIZE", "32"))
         self.normalize_embeddings = self.get_env("NORMALIZE_EMBEDDINGS", "True").lower() == "true"
+        # Explicit local-cache mode; retain compatibility with existing HF offline config.
+        local_only_value = self.get_env(
+            "EMBEDDING_LOCAL_FILES_ONLY",
+            self.get_env("HF_HUB_OFFLINE", "false"),
+        )
+        self.embedding_local_files_only = str(local_only_value).strip().lower() in {
+            "1", "true", "yes", "on"
+        }
 
         self._load_all()
 

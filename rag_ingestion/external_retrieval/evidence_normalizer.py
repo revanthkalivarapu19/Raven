@@ -1,5 +1,6 @@
 import logging
 from typing import Optional
+from urllib.parse import urlsplit
 
 from rag_ingestion.retrieval.evidence_schema import Evidence
 from rag_ingestion.external_retrieval.source_schema import ExternalEvidence
@@ -50,6 +51,18 @@ class ExternalEvidenceNormalizer:
         # Map fields
         metadata = external_evidence.metadata.copy() if external_evidence.metadata else {}
         metadata["external_source_type"] = external_evidence.source_type
+        metadata.setdefault("content_quality", "source_text")
+        if web_result and web_result.text and not web_result.error:
+            metadata["content_quality"] = "source_text"
+            metadata["full_page_extracted"] = True
+            metadata["full_page_url"] = web_result.final_url or external_evidence.url
+        elif metadata.get("text_limitation") or metadata.get("metadata_only"):
+            metadata["content_quality"] = "metadata_or_snippet"
+        if external_evidence.url:
+            hostname = (urlsplit(external_evidence.url).hostname or "").lower()
+            if hostname.startswith("www."):
+                hostname = hostname[4:]
+            metadata.setdefault("source_family", hostname or external_evidence.source)
         if web_result and web_result.status_code:
             metadata["web_status_code"] = web_result.status_code
             if web_result.error:

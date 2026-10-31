@@ -4,8 +4,8 @@ test_domain_agent.py
 Tests the Domain Detection Agent using sample claims.
 """
 
-from domain_agent import DomainDetectionAgent
-from examples import TEST_CLAIMS
+from agents.domain_detection.domain_agent import DomainDetectionAgent
+from agents.domain_detection.examples import TEST_CLAIMS
 
 
 def run_tests():

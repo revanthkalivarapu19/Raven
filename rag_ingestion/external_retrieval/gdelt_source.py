@@ -8,10 +8,15 @@ import requests
 
 from .base_source import BaseExternalSource
 from .source_schema import ExternalEvidence
+from rag_ingestion.llm_resilience import remaining_request_budget
 
 logger = logging.getLogger(__name__)
 
 class GDELTSource(BaseExternalSource):
+    search_capable = True
+    returns_full_text = False
+    news_capable = True
+    supports_temporal_filtering = False
     """Concrete external source for the GDELT Project."""
 
     def __init__(
@@ -31,6 +36,7 @@ class GDELTSource(BaseExternalSource):
         self.max_retries = max_retries
         self.retry_backoff_seconds = retry_backoff_seconds
         self.base_url = "https://api.gdeltproject.org/api/v2/doc/doc"
+        self.session = requests.Session()
 
     @staticmethod
     def _retry_after_seconds(value: Optional[str]) -> Optional[float]:
@@ -80,11 +86,11 @@ class GDELTSource(BaseExternalSource):
         response = None
         for attempt in range(self.max_retries + 1):
             try:
-                response = requests.get(
+                    response = self.session.get(
                     self.base_url,
                     params=params,
                     headers=headers,
-                    timeout=self.timeout,
+                    timeout=self.request_timeout(),
                 )
             except requests.exceptions.Timeout as exc:
                 raise RuntimeError(f"GDELT API request timed out: {exc}") from exc
@@ -111,10 +117,23 @@ class GDELTSource(BaseExternalSource):
                 self.max_retries,
                 delay,
             )
+            remaining = remaining_request_budget()
+            if remaining is not None:
+                if remaining <= 0 or delay >= remaining:
+                    raise RuntimeError("GDELT retry skipped because request deadline was reached")
+                delay = min(delay, max(0.0, remaining - 0.001))
             time.sleep(delay)
+
+        if response is None:
+            raise RuntimeError("GDELT API request produced no response")
 
         try:
             response.raise_for_status()
+            content_type = response.headers.get("Content-Type", "")
+            if content_type and "json" not in content_type.lower():
+                raise ValueError(
+                    f"GDELT returned non-JSON Content-Type '{content_type}'"
+                )
             data = response.json()
         except requests.exceptions.Timeout as exc:
             raise RuntimeError(f"GDELT API request timed out: {exc}") from exc
@@ -203,3 +222,4 @@ class GDELTSource(BaseExternalSource):
 
         return results
     supported_domains = frozenset({"medical", "political", "science", "finance", "general"})
+    supports_historical = False

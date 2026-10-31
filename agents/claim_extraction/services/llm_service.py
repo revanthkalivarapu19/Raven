@@ -1,14 +1,16 @@
 import ollama
+from rag_ingestion.llm_resilience import LLMResilience
 
 
 class LLMService:
 
     def __init__(self):
-        self.model = "llama3.1:8b"
+        self.model = "qwen2.5:3b"
+        self._resilience = LLMResilience()
 
     def generate(self, prompt):
 
-        response = ollama.chat(
+        response = self._resilience.chat(lambda: ollama.chat(
             model=self.model,
             messages=[
                 {
@@ -22,17 +24,46 @@ Rules:
 - Return only ONE main claim.
 - The claim must be concise.
 - The claim must normally be ONE sentence.
-- Keep the important person, organization, event, number, date or percentage.
+- Keep every materially relevant person, organization, event, number, date,
+  percentage, unit, and relative time phrase from the factual claim.
+- Preserve every explicitly named entity in the claim, including every name in
+  a multi-entity list; never replace those names with a generic group label
+  such as "major companies".
+- When a group is followed by its explicitly named members (including after
+  wording such as "including" or punctuation such as dashes), include every
+  listed member in the extracted claim. This is mandatory even if the result
+  exceeds the usual word target.
+- Preserve every explicit temporal qualifier that materially affects the
+  claim, including relative expressions (for example, "recently", "yesterday",
+  "last week", or "this year") and specific time references (for example,
+  "in 2025" or "on Friday"). Do not omit, weaken, or generalize these
+  expressions to make the claim shorter.
+- Preserve negation (for example, "did not" or "never") exactly when it
+  changes the factual proposition.
+- Never change a number, percentage, date, year, quantity, named entity, or
+  explicit temporal qualifier, and never introduce factual information absent
+  from the input.
+- Preserve factual polarity and directional/comparative meaning, including
+  increase/decrease, rise/fall, before/after, more/less, and whether a quantity
+  changed "by" a value or changed "to" a value.
+- A concise paraphrase is allowed only when all underlying factual values and
+  relations remain unchanged.
+- Preserve a causal or contextual qualifier when it changes the event's
+  meaning, timing, scope, or verifiability. A qualifier such as "to boost
+  economic growth" may be retained as context in the same concise claim.
 - Remove background information.
 - Remove explanations.
-- Remove supporting details.
+- Remove background and commentary, but do not remove factual qualifiers,
+  causal context, or the time period needed to verify the event.
 - Remove repeated information.
 - Never copy the entire paragraph.
 - Never list multiple claims.
 - Never explain your reasoning.
 - Never say whether the claim is true or false.
 - Do not add information that is not present.
-- Keep the result to approximately 10-30 words.
+- Keep the result concise, normally 10-30 words; use more words when necessary
+  to preserve material facts, explicitly named entities, and temporal
+  qualifiers.
 - The result should normally fit within one or two lines.
 
 Return ONLY the final claim.
@@ -46,6 +77,6 @@ Return ONLY the final claim.
             options={
                 "temperature": 0
             }
-        )
+        ))
 
         return response["message"]["content"].strip()

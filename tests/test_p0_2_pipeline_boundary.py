@@ -7,7 +7,10 @@ from types import SimpleNamespace
 from rag_ingestion.pipeline.claim_processing import ClaimProcessingPipeline
 from rag_ingestion.retrieval.evidence_schema import Evidence
 from rag_ingestion.external_retrieval.source_schema import ExternalEvidence
-from rag_ingestion.verification.verification_schema import OverallVerification
+from rag_ingestion.verification.verification_schema import (
+    OverallVerification,
+    VerificationFailure,
+)
 
 
 @dataclass
@@ -183,6 +186,8 @@ def _load_graph_boundary():
         "Dict": dict,
         "Any": object,
         "logger": logging.getLogger(__name__),
+        "OverallVerification": OverallVerification,
+        "VerificationFailure": VerificationFailure,
     }
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(graph_path), "exec"), namespace)
     return namespace
@@ -215,3 +220,5 @@ def test_graph_calls_pipeline_once_and_not_managers_directly():
     assert calls[0]["retrieval_queries"] == ["query one", "query two"]
     assert calls[0]["claim"] == "The original claim."
     assert result["fused_evidence"] == []
+    assert result["verification_result"] is None
+    assert result["verification_failure"].error_type == "TypeError"

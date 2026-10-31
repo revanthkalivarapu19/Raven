@@ -1,7 +1,11 @@
+import logging
 from typing import List, Tuple
 
 from rag_ingestion.pipeline.storage_manager import StorageManager
 from rag_ingestion.embeddings.base_embedder import BaseEmbedder
+
+logger = logging.getLogger(__name__)
+
 
 class FAISSQueryService:
     """Service that performs FAISS similarity search for a query claim.
@@ -36,9 +40,24 @@ class FAISSQueryService:
         # Map FAISS internal ids to chunk identifiers using the lookup dict
         idx_to_id = lookup.get("idx_to_id", {})
         results: List[Tuple[str, float]] = []
+        dropped_unmapped = 0
         for idx, score in zip(ids.tolist(), scores.tolist()):
             chunk_id = idx_to_id.get(str(idx))
             if chunk_id:
                 results.append((chunk_id, score))
+            else:
+                dropped_unmapped += 1
+                logger.info(
+                    "evidence_diag drop stage=local_faiss_mapping faiss_index=%s "
+                    "reason=invalid_schema",
+                    idx,
+                )
+        logger.info(
+            "evidence_diag local_faiss raw=%d mapped=%d dropped=%d top_k=%d",
+            len(ids),
+            len(results),
+            dropped_unmapped,
+            top_k,
+        )
         # Already ordered by FAISS (highest score first)
         return results

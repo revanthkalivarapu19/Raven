@@ -13,6 +13,9 @@ uvicorn
 langgraph
 loguru
 
+# Test dependencies
+pytest
+
 
 # Layer 6 evidence retrieval and verification dependencies
 aiohttp

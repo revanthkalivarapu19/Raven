@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import time
 
 from rag_ingestion.pipeline.claim_processing import (
     ClaimProcessingPipeline,
@@ -12,6 +13,8 @@ from tests.test_p0_2_pipeline_boundary import (
     VerificationFake,
 )
 from rag_ingestion.external_retrieval.source_schema import ExternalEvidence
+from rag_ingestion.external_retrieval.gdelt_source import GDELTSource
+from rag_ingestion.llm_resilience import request_deadline
 
 
 class CountingExternal:
@@ -59,6 +62,26 @@ def test_query_budget_truncates_execution_and_deduplicates():
     assert pipeline.external_manager.queries == pipeline.retrieval_manager.queries
 
 
+def test_pipeline_logs_per_query_evidence_counts_and_verifier_call(caplog):
+    pipeline = _pipeline()
+
+    with caplog.at_level("INFO", logger="rag_ingestion.pipeline.claim_processing"):
+        result = pipeline.process(
+            claim="claim",
+            domain="general",
+            retrieval_queries=["query-one"],
+        )
+
+    diagnostics = "\n".join(record.message for record in caplog.records)
+    assert "evidence_diag query='query-one'" in diagnostics
+    assert "local_raw=1 external_normalized=1" in diagnostics
+    assert "deduped_added=2" in diagnostics
+    assert "fused_ranked=2" in diagnostics
+    assert "final_before_verification local=1 external=1 fused=2" in diagnostics
+    assert "verifier_called=yes evidence_count=2" in diagnostics
+    assert len(result.fused_evidence) == 2
+
+
 def test_fallback_budget_is_shared_and_urls_are_deduplicated():
     pipeline = _pipeline()
 
@@ -71,3 +94,9 @@ def test_fallback_budget_is_shared_and_urls_are_deduplicated():
     assert len(pipeline.web_retriever.urls) == 1
     assert len(pipeline.fusion_manager.calls) == 1
     assert len(pipeline.verification_manager.calls) == 1
+
+
+def test_provider_timeout_is_bounded_by_request_budget():
+    provider = GDELTSource(timeout=30, max_retries=0)
+    with request_deadline(time.monotonic() + 0.01):
+        assert 0 < provider.request_timeout() <= 0.011

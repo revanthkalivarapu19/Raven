@@ -1,5 +1,5 @@
-from claim_extraction.claim_extraction_agent import ClaimExtractionAgent
-from domain_agent import DomainDetectionAgent
+from agents.claim_extraction.claim_extraction_agent import ClaimExtractionAgent
+from agents.domain_detection.domain_agent import DomainDetectionAgent
 
 
 def main():

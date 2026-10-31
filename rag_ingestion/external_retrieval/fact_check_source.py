@@ -11,6 +11,9 @@ from .source_schema import ExternalEvidence
 logger = logging.getLogger(__name__)
 
 class FactCheckSource(BaseExternalSource):
+    search_capable = True
+    returns_full_text = False
+    requires_authentication = True
     """Concrete external source for the Google Fact Check Tools API."""
 
     def __init__(self, timeout: int = 15) -> None:
@@ -44,7 +47,7 @@ class FactCheckSource(BaseExternalSource):
             params["languageCode"] = language.strip()
 
         try:
-            response = requests.get(self.base_url, params=params, timeout=self.timeout)
+            response = requests.get(self.base_url, params=params, timeout=self.request_timeout())
             response.raise_for_status()
             data = response.json()
         except requests.exceptions.Timeout as e:
