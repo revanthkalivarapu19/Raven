@@ -244,6 +244,9 @@ class ClaimProcessingPipeline:
                 external_evidence=candidates,
                 top_k=len(candidates),
                 claim=claim,
+                # Snippets are candidates for source-text upgrade; filtering
+                # them here could prevent fetching the text needed to assess relevance.
+                apply_minimum_relevance=False,
             )
         else:
             ranked = candidates

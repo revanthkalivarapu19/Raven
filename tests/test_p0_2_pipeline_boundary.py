@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from rag_ingestion.pipeline.claim_processing import ClaimProcessingPipeline
 from rag_ingestion.retrieval.evidence_schema import Evidence
+from rag_ingestion.retrieval.evidence_fusion import EvidenceFusionManager
 from rag_ingestion.external_retrieval.source_schema import ExternalEvidence
 from rag_ingestion.verification.verification_schema import (
     OverallVerification,
@@ -140,6 +141,29 @@ def test_verification_runs_once_with_original_claim():
 
     assert len(verification.calls) == 1
     assert verification.calls[0][0] == claim
+
+
+def test_pipeline_passes_original_claim_into_fusion():
+    claim = "Smoking increases the risk of lung cancer."
+
+    class ClaimCapturingFusion(EvidenceFusionManager):
+        def __init__(self):
+            super().__init__()
+            self.claims = []
+
+        def fuse(self, *args, **kwargs):
+            self.claims.append(kwargs.get("claim"))
+            return super().fuse(*args, **kwargs)
+
+    pipeline = _pipeline()
+    pipeline.fusion_manager = ClaimCapturingFusion()
+    pipeline.process(
+        claim=claim,
+        domain="medical",
+        retrieval_queries=["smoking lung cancer risk", "smoking cancer risk", "lung cancer smoking"],
+    )
+
+    assert pipeline.fusion_manager.claims == [claim]
 
 
 def test_single_retrieval_query_remains_backward_compatible():

@@ -8,6 +8,9 @@ from rag_ingestion.retrieval.evidence_schema import Evidence
 
 logger = logging.getLogger(__name__)
 
+MINIMUM_CLAIM_RELEVANCE = 0.10
+MINIMUM_SEMANTIC_SIMILARITY = 0.55
+
 
 def _canonicalize_url(url: str) -> str:
     """Return a deterministic, canonical version of a URL.
@@ -153,11 +156,43 @@ class EvidenceFusionManager:
 
     @staticmethod
     def _claim_features(claim: str) -> set[str]:
+        stopwords = {
+            "a", "an", "and", "are", "as", "at", "be", "been", "by",
+            "did", "do", "does", "for", "from", "has", "have", "in",
+            "into", "is", "it", "of", "on", "or", "that", "the", "this",
+            "to", "was", "were", "with",
+        }
         return {
             token.casefold()
             for token in re.findall(r"[^\W_]+(?:[.%][^\W_]+)*", claim or "")
-            if len(token) > 1
+            if len(token) > 1 and token.casefold() not in stopwords
         }
+
+    def _claim_relevance(
+        self, ev: Evidence, similarity: float | None, claim: str
+    ) -> tuple[float, int, int, bool, bool]:
+        """Return claim relevance and lexical overlap counts, excluding quality signals."""
+        claim_tokens = self._claim_features(claim)
+        if not claim_tokens:
+            return 1.0, 0, 0, False, False
+        evidence_text = f"{ev.title or ''} {ev.text or ''}"
+        evidence_tokens = self._claim_features(evidence_text)
+        overlap = len(claim_tokens & evidence_tokens)
+        lexical = overlap / len(claim_tokens)
+        claim_values = set(re.findall(r"\d+(?:\.\d+)?%?", claim or ""))
+        evidence_values = set(re.findall(r"\d+(?:\.\d+)?%?", evidence_text))
+        numeric = 1.0 if claim_values and claim_values & evidence_values else 0.0
+        claim_years = {t for t in claim_tokens if re.fullmatch(r"(?:19|20)\d{2}", t)}
+        evidence_years = {t for t in evidence_tokens if re.fullmatch(r"(?:19|20)\d{2}", t)}
+        temporal_mismatch = bool(claim_years and evidence_years and not claim_years & evidence_years)
+        temporal = (
+            1.0 if claim_years and claim_years & evidence_years
+            else -0.35 if temporal_mismatch
+            else 0.0
+        )
+        semantic = max(0.0, min(float(similarity), 1.0)) if similarity is not None else 0.0
+        score = 0.25 * semantic + 0.25 * lexical + 0.35 * numeric + 0.10 * temporal
+        return score, overlap, len(claim_tokens), bool(numeric or temporal > 0), temporal_mismatch
 
     @staticmethod
     def _political_news_provider(ev: Evidence) -> str | None:
@@ -247,6 +282,7 @@ class EvidenceFusionManager:
         top_k: int,
         claim: str | None = None,
         domain: str | None = None,
+        apply_minimum_relevance: bool = True,
     ) -> List[Evidence]:
         """Merge, deduplicate and rank evidence.
 
@@ -270,6 +306,43 @@ class EvidenceFusionManager:
             len(combined),
             len(unique),
         )
+        # Filter on claim relevance before selecting top-k. Similarity is taken
+        # from the existing FAISS signal (when present); lexical, numeric and
+        # temporal signals come from the same claim-aware fusion implementation.
+        if claim and apply_minimum_relevance:
+            retained = []
+            for ev in unique:
+                (
+                    relevance,
+                    overlap,
+                    claim_term_count,
+                    has_exact_context,
+                    temporal_mismatch,
+                ) = self._claim_relevance(ev, ev.similarity_score, claim)
+                minimum_overlap = min(2, claim_term_count)
+                semantic_below_floor = (
+                    ev.similarity_score is not None
+                    and ev.similarity_score < MINIMUM_SEMANTIC_SIMILARITY
+                )
+                if temporal_mismatch or relevance < MINIMUM_CLAIM_RELEVANCE or semantic_below_floor or (
+                    overlap < minimum_overlap and not has_exact_context
+                ):
+                    logger.info(
+                        "evidence_diag drop stage=fusion_relevance evidence_id=%s "
+                        "reason=below_minimum relevance=%.4f similarity=%s "
+                        "overlap=%d/%d threshold=%.2f semantic_floor=%.2f",
+                        ev.evidence_id,
+                        relevance,
+                        f"{ev.similarity_score:.4f}" if ev.similarity_score is not None else "missing",
+                        overlap,
+                        claim_term_count,
+                        MINIMUM_CLAIM_RELEVANCE,
+                        MINIMUM_SEMANTIC_SIMILARITY,
+                    )
+                    continue
+                retained.append(ev)
+            unique = retained
+
         raw_sims = [ev.similarity_score for ev in unique]
         norm_sims = self._normalize_similarity(raw_sims)
         scored = [(self._ranking_score(ev, ns, claim), ev) for ev, ns in zip(unique, norm_sims)]
