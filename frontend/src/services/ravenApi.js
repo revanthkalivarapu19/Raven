@@ -1,3 +1,5 @@
+import { recheckInputForTurn } from './followUpIntent.js';
+
 /**
  * RAVEN API Service Layer
  * Connects the frontend interface to fact-checking services.
@@ -297,6 +299,11 @@ export async function verify({ text = '', image: _image = null } = {}) {
 
   // Explicit demo mode keeps the existing static responses.
   return getStaticDemoResult(text);
+}
+
+/** Re-run verification for an existing claim turn. */
+export function recheckClaim(claimTurn) {
+  return verify(recheckInputForTurn(claimTurn));
 }
 
 /**

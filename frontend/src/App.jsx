@@ -11,7 +11,8 @@ import { FollowUpTurn } from './components/FollowUpTurn';
 import { WhyResultDialog, AboutDialog } from './components/Dialogs';
 import { Toast } from './components/Toast';
 import { useConversation } from './hooks/useConversation';
-import { verify, followUp, resetDemoSession } from './services/ravenApi';
+import { verify, followUp, recheckClaim, resetDemoSession } from './services/ravenApi';
+import { classifyInputIntent } from './services/followUpIntent';
 
 function App() {
   const {
@@ -150,42 +151,27 @@ function App() {
 
     // Check if this is a follow-up to an existing conversation
     const lastClaimTurn = [...turns].reverse().find((t) => t.type === 'claim' && t.status === 'done');
-    const lower = textToSend.toLowerCase();
+    const intent = classifyInputIntent(textToSend);
 
-    // Determine whether input is a conversational follow-up question or a new claim
-    const isExplicitClaim =
-      lower.startsWith('what about this claim') ||
-      lower.startsWith('check this claim') ||
-      lower.startsWith('is this claim true') ||
-      lower.includes('drinking coffee') ||
-      lower.includes('scientists developed') ||
-      lower.includes('ai model') ||
-      lower.includes('alzheimer');
-
-    const isComparisonOrFollowUp =
-      lower.includes('compare') ||
-      lower.includes('first claim') ||
-      lower.includes('previous claim') ||
-      lower.includes('confidence') ||
-      lower.includes('which source') ||
-      lower.includes('strongest') ||
-      lower.includes('why is') ||
-      lower.includes('tell me more') ||
-      lower.includes('explain more');
-
-    const isQuestionFollowUp =
-      Boolean(lastClaimTurn && !screenshot && (isComparisonOrFollowUp || (!isExplicitClaim && textToSend.endsWith('?'))));
-
-    if (isQuestionFollowUp) {
+    if (lastClaimTurn && !screenshot && intent !== 'NEW_CLAIM') {
       const followUpId = addFollowUp(
         textToSend,
-        'Consulting verified sources…',
+        intent === 'RECHECK_CLAIM' ? 'Rechecking the original claim against sources…' : 'Consulting the existing result…',
         lastClaimTurn.id
       );
       setComposerText('');
       setScreenshot(null);
 
       try {
+        if (intent === 'RECHECK_CLAIM') {
+          const result = await recheckClaim(lastClaimTurn);
+          updateTurn(followUpId, {
+            answer: 'Recheck complete for the original claim.',
+            result,
+            status: 'done',
+          });
+          return;
+        }
         const answerText = await followUp({
           question: textToSend,
           result: lastClaimTurn.result,
@@ -320,6 +306,9 @@ function App() {
                     <FollowUpTurn
                       question={turn.question}
                       answer={turn.answer}
+                      result={turn.result}
+                      onOpenWhyResult={handleOpenWhyResult}
+                      onOpenAnotherSource={handleOpenAnotherSource}
                     />
                   )}
                 </div>

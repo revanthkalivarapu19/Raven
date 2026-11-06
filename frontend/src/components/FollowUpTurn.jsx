@@ -1,4 +1,6 @@
-export function FollowUpTurn({ question = '', answer = '' }) {
+import { ResultCard } from './ResultCard';
+
+export function FollowUpTurn({ question = '', answer = '', result = null, onOpenWhyResult, onOpenAnotherSource }) {
   return (
     <div className="followup-turn-container">
       {question && (
@@ -15,6 +17,11 @@ export function FollowUpTurn({ question = '', answer = '' }) {
           <p>{answer}</p>
         </div>
       </div>
+      {result && (
+        <div className="turn-response">
+          <ResultCard result={result} onOpenWhyResult={onOpenWhyResult} onOpenAnotherSource={onOpenAnotherSource} />
+        </div>
+      )}
     </div>
   );
 }
