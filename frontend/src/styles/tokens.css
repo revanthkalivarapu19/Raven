@@ -1,0 +1,131 @@
+:root {
+  /* Core Colours - Refined light mode with distinct surfaces */
+  --color-bg: #F1F4F6;
+  --color-surface: #FFFFFF;
+  --color-sidebar: #F8FAFC;
+  --color-ink: #182632;
+  --color-text-secondary: #526675;
+  --color-border: #D5DFE6;
+  --color-border-subtle: #E5ECF0;
+  --color-card-border: #D5DFE6;
+  --color-navy: #1E3A56;
+  --color-navy-hover: #162D44;
+  --color-navy-active: #102133;
+
+  /* Verdict & Stance Colours */
+  --color-real: #1E7E5A;
+  --color-real-bg: #E8F6F0;
+  --color-real-border: #B7E2CF;
+
+  --color-unverified: #A66E26;
+  --color-unverified-bg: #FAF3E7;
+  --color-unverified-border: #EDD9B8;
+
+  --color-fake: #B83C38;
+  --color-fake-bg: #FBEBEA;
+  --color-fake-border: #F0C4C2;
+
+  /* Interactive & States */
+  --color-focus: #1E3A56;
+  --color-focus-offset: #FFFFFF;
+  --color-disabled-bg: #E3E9EE;
+  --color-disabled-text: #7D8F9C;
+  --color-surface-hover: #F6F9FB;
+  --color-sidebar-hover: #EEF3F7;
+  --color-sidebar-active: #E2EBF1;
+  --color-backdrop: rgba(18, 30, 42, 0.45);
+  --color-toast-bg: #182632;
+  --color-toast-text: #FFFFFF;
+  --color-chip-bg: #E7EEF3;
+  --color-chip-hover: #DAE3EA;
+  --color-bar-bg: #E2E8EE;
+
+  /* Spacing */
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-20: 20px;
+  --space-24: 24px;
+  --space-32: 32px;
+
+  /* Border Radii */
+  --radius-control: 6px;
+  --radius-card: 10px;
+  --radius-pill: 9999px;
+
+  /* Typography Sizes (nothing below 12px, body 15px, verdict 32px) */
+  --font-size-xs: 12px;
+  --font-size-sm: 13px;
+  --font-size-body: 15px;
+  --font-size-md: 16px;
+  --font-size-lg: 18px;
+  --font-size-xl: 20px;
+  --font-size-2xl: 24px;
+  --font-size-verdict: 32px;
+
+  /* Typography Family & Weights */
+  --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.6;
+
+  /* Shadows */
+  --shadow-subtle: 0 1px 2px rgba(18, 30, 42, 0.04);
+  --shadow-card: 0 2px 6px rgba(18, 30, 42, 0.05), 0 1px 2px rgba(18, 30, 42, 0.03);
+  --shadow-dialog: 0 12px 36px rgba(12, 24, 36, 0.16);
+}
+
+[data-theme="dark"] {
+  /* Core Colours - Refined dark navy & charcoal hierarchy */
+  --color-bg: #0C1116;             /* Canvas background */
+  --color-sidebar: #101720;        /* Sidebar dark navy surface */
+  --color-surface: #17232F;        /* Card & container elevated surface */
+  --color-surface-hover: #1D2D3D;
+  --color-ink: #EDF4F8;            /* Bright readable primary text */
+  --color-text-secondary: #93A7B6;  /* High readability secondary label */
+  --color-border: #233546;         /* Crisp boundary */
+  --color-border-subtle: #1A2835;  /* Subtle divider */
+  --color-card-border: #273A4D;    /* Card border */
+  --color-navy: #3D6C96;           /* Restrained accent blue */
+  --color-navy-hover: #4A7DAA;
+  --color-navy-active: #588FBD;
+
+  /* Verdict & Stance Colours (tuned for dark surfaces) */
+  --color-real: #3EC594;
+  --color-real-bg: #0E291F;
+  --color-real-border: #1B4A38;
+
+  --color-unverified: #E6A64C;
+  --color-unverified-bg: #2C1F0E;
+  --color-unverified-border: #523916;
+
+  --color-fake: #E66E6B;
+  --color-fake-bg: #2B1414;
+  --color-fake-border: #4D2121;
+
+  /* Interactive & States */
+  --color-focus: #4A7DAA;
+  --color-focus-offset: #17232F;
+  --color-disabled-bg: #1B2632;
+  --color-disabled-text: #5B6F7E;
+  --color-sidebar-hover: #16202B;
+  --color-sidebar-active: #1C2937;
+  --color-backdrop: rgba(6, 9, 13, 0.78);
+  --color-toast-bg: #EDF4F8;
+  --color-toast-text: #0C1116;
+  --color-chip-bg: #1B2836;
+  --color-chip-hover: #243547;
+  --color-bar-bg: #202F3E;
+
+  /* Shadows */
+  --shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.45);
+  --shadow-dialog: 0 16px 40px rgba(0, 0, 0, 0.7);
+}
