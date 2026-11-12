@@ -14,6 +14,7 @@ def _item(claim, relationship, same_event=True):
         evidence_id="e1", claim=claim, relationship=relationship,
         confidence=0.9, reasoning="test", verifier="test", same_event=same_event,
         claim_aligned=same_event,
+        directly_establishes_proposition=relationship in {"SUPPORTS", "CONTRADICTS"},
     )
 
 
@@ -23,7 +24,8 @@ def _reflect(monkeypatch, verification):
         lambda **kwargs: {"message": {"content": '{"decision":"YES","is_evidence_sufficient":true,"contradictions_found":false,"confidence":0.9,"notes":"Multiple reputable sources confirm the claim.","support_score":0.7,"source_credibility_score":0.9,"evidence_quality_score":0.9,"claim_supported":true,"claim_contradicted":false,"evidence_items_contradict_each_other":false}'}},
     )
     return ReflectionAgent().reflect(
-        claim_text=verification.claim, domain="general", evidence_list=[{"text": "evidence"}],
+        claim_text=verification.claim, domain="general",
+        evidence_list=[{"evidence_id": "e1", "text": "evidence", "similarity_score": 0.9, "authority_score": 0.9}],
         verification_result=verification,
     )
 
@@ -85,7 +87,7 @@ def test_structured_support_and_contradiction_force_evidence_conflict(monkeypatc
     )
     result = ReflectionAgent().reflect(
         claim_text=claim, domain="Finance",
-        evidence_list=[{"evidence_id": "support", "text": "support"}, {"evidence_id": "contradiction", "text": "contradiction"}],
+        evidence_list=[{"evidence_id": "support", "text": "support", "similarity_score": 0.9, "authority_score": 0.9}, {"evidence_id": "contradiction", "text": "contradiction", "similarity_score": 0.9, "authority_score": 0.9}],
         verification_result=verification,
     )
     assert result["evidence_items_contradict_each_other"] is True
@@ -108,7 +110,7 @@ def test_structured_different_event_does_not_force_conflict(monkeypatch):
     )
     result = ReflectionAgent().reflect(
         claim_text=claim, domain="Finance",
-        evidence_list=[{"evidence_id": "support", "text": "support"}, {"evidence_id": "other-event", "text": "other event"}],
+        evidence_list=[{"evidence_id": "support", "text": "support", "similarity_score": 0.9, "authority_score": 0.9}, {"evidence_id": "other-event", "text": "other event", "similarity_score": 0.9, "authority_score": 0.9}],
         verification_result=verification,
     )
     assert result["evidence_items_contradict_each_other"] is False
@@ -130,14 +132,14 @@ def test_scientific_conflict_does_not_require_a_dated_event(monkeypatch):
     )
     result = ReflectionAgent().reflect(
         claim_text=claim, domain="Medical",
-        evidence_list=[{"evidence_id": "support", "text": "support"}, {"evidence_id": "contradiction", "text": "contradiction"}],
+        evidence_list=[{"evidence_id": "support", "text": "support", "similarity_score": 0.9, "authority_score": 0.9}, {"evidence_id": "contradiction", "text": "contradiction", "similarity_score": 0.9, "authority_score": 0.9}],
         verification_result=verification,
     )
     assert result["evidence_items_contradict_each_other"] is True
     assert result["decision"] == "NO"
 
 
-def test_insufficient_assessment_does_not_force_conflict(monkeypatch):
+def test_direct_opposing_relationships_force_conflict_even_if_aggregate_is_stale(monkeypatch):
     claim = "The policy rate was reduced."
     support = _item(claim, "SUPPORTS")
     support.evidence_id = "support"
@@ -153,5 +155,6 @@ def test_insufficient_assessment_does_not_force_conflict(monkeypatch):
         evidence_list=[{"evidence_id": "support", "text": "support"}, {"evidence_id": "contradiction", "text": "contradiction"}],
         verification_result=verification,
     )
-    assert result["evidence_items_contradict_each_other"] is False
+    assert result["evidence_items_contradict_each_other"] is True
     assert result["is_evidence_sufficient"] is False
+    assert result["decision"] == "NO"

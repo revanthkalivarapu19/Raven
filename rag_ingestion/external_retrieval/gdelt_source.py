@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -7,6 +8,7 @@ from typing import List, Optional, Dict, Any
 import requests
 
 from .base_source import BaseExternalSource
+from .proxy_policy import provider_proxy_overrides
 from .source_schema import ExternalEvidence
 from rag_ingestion.llm_resilience import remaining_request_budget
 
@@ -22,8 +24,8 @@ class GDELTSource(BaseExternalSource):
     def __init__(
         self,
         timespan: str = "7d",
-        timeout: int = 30,
-        max_retries: int = 2,
+        timeout: int = 2,
+        max_retries: int = 0,
         retry_backoff_seconds: float = 0.5,
     ) -> None:
         if max_retries < 0:
@@ -32,11 +34,12 @@ class GDELTSource(BaseExternalSource):
             raise ValueError("retry_backoff_seconds cannot be negative")
         self.name = "gdelt"
         self.timespan = timespan
-        self.timeout = timeout
+        self.timeout = min(float(timeout), 2.0)
         self.max_retries = max_retries
         self.retry_backoff_seconds = retry_backoff_seconds
         self.base_url = "https://api.gdeltproject.org/api/v2/doc/doc"
         self.session = requests.Session()
+        self.last_http_status = None
 
     @staticmethod
     def _retry_after_seconds(value: Optional[str]) -> Optional[float]:
@@ -66,7 +69,17 @@ class GDELTSource(BaseExternalSource):
         if top_k < 1:
             raise ValueError("top_k must be >= 1")
 
-        query_parts = [query]
+        # GDELT rejects an entire query when it contains a one-character
+        # keyword (for example the article "a" in a natural-language claim).
+        # Keep the claim text otherwise intact for this provider.
+        gdelt_query = re.sub(r"\s+", " ", re.sub(r"\ba\b", " ", query, flags=re.IGNORECASE)).strip()
+        if not gdelt_query:
+            raise ValueError("Query must contain searchable terms after GDELT normalization")
+        if '"' in gdelt_query:
+            query_expression = gdelt_query
+        else:
+            query_expression = f'"{gdelt_query}" OR {gdelt_query}'
+        query_parts = [query_expression]
         if language and language.strip():
             query_parts.append(f"sourceLang:{language.strip()}")
         if country and country.strip():
@@ -91,7 +104,9 @@ class GDELTSource(BaseExternalSource):
                     params=params,
                     headers=headers,
                     timeout=self.request_timeout(),
+                    proxies=provider_proxy_overrides(self.base_url),
                 )
+                    self.last_http_status = response.status_code
             except requests.exceptions.Timeout as exc:
                 raise RuntimeError(f"GDELT API request timed out: {exc}") from exc
             except requests.exceptions.RequestException as exc:

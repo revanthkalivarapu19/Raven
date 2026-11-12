@@ -334,16 +334,16 @@ def test_verdict_stream_stops_before_xai(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("relationship", "same_event", "expected"),
+    ("relationship", "same_event", "expected", "expected_relationship"),
     [
-        ("SUPPORTS", True, "SUPPORTED"),
-        ("CONTRADICTS", True, "CONTRADICTED"),
-        ("CONTRADICTS", False, "UNVERIFIED"),
-        ("INSUFFICIENT", False, "UNVERIFIED"),
+        ("SUPPORTS", True, "SUPPORTED", "SUPPORTS"),
+        ("CONTRADICTS", True, "CONTRADICTED", "CONTRADICTS"),
+        ("CONTRADICTS", False, "UNVERIFIED", "INSUFFICIENT"),
+        ("INSUFFICIENT", False, "UNVERIFIED", "INSUFFICIENT"),
     ],
 )
 def test_verifier_only_uses_production_verification_semantics(
-    monkeypatch, relationship, same_event, expected
+    monkeypatch, relationship, same_event, expected, expected_relationship
 ):
     from rag_ingestion.verification import ollama_verifier
 
@@ -351,36 +351,37 @@ def test_verifier_only_uses_production_verification_semantics(
 
     def generate(_call):
         calls.append(True)
-        return {
-            "response": json.dumps({
-                "relationship": relationship,
-                "confidence": 0.95,
-                "reasoning": "Controlled benchmark response.",
-                "same_event": same_event,
-                "claim_aligned": same_event,
-                "directly_establishes_proposition": relationship in {"SUPPORTS", "CONTRADICTS"},
-            })
-        }
+        value = {
+            "SUPPORTS": "SUPPORTED",
+            "CONTRADICTS": "CONTRADICTED",
+            "INSUFFICIENT": "INSUFFICIENT",
+        }[expected_relationship]
+        return {"response": json.dumps({
+            "results": [{"evidence_id": "benchmark-controlled-1-1", "relationship": value}],
+        })}
 
     monkeypatch.setattr(ollama_verifier._LLM_RESILIENCE, "generate", generate)
+    reference_text = (
+        "Controlled reference: The agency did not reduce its rate on Friday; it increased it."
+        if expected_relationship == "CONTRADICTS"
+        else "Controlled reference: The agency reduced its rate on Friday."
+    )
     state = _run_verifier_only(
         {
             "claim": "The agency reduced its rate on Friday.",
-            "evidence": (
-                "Controlled reference: The agency reduced its rate on Friday."
-            ),
+            "evidence": reference_text,
             "source": "Controlled reference source",
         },
         "controlled-1",
     )
 
     assert calls == [True]
-    assert state["verification_result"].results[0].relationship == relationship
-    assert state["verification_result"].results[0].same_event is same_event
+    assert state["verification_result"].results[0].relationship == expected_relationship
+    assert state["verification_result"].results[0].same_event is (same_event and expected_relationship != "INSUFFICIENT")
     assert state["final_output"]["final_verdict"] == expected
     assert state["fused_evidence"][0].text.startswith("Controlled reference:")
-    assert state["verifier_diagnostics"][0]["verification_relationship"] == relationship
-    assert state["verifier_diagnostics"][0]["same_event"] is same_event
+    assert state["verifier_diagnostics"][0]["verification_relationship"] == expected_relationship
+    assert state["verifier_diagnostics"][0]["same_event"] is (same_event and expected_relationship != "INSUFFICIENT")
     assert state["verifier_diagnostics"][0]["verification_status"] == "COMPLETED"
     assert state["verifier_diagnostics"][0]["elapsed_seconds"] >= 0
 
@@ -389,23 +390,16 @@ def test_verifier_only_records_per_call_and_aggregate_diagnostics(monkeypatch):
     from rag_ingestion.verification import ollama_verifier
 
     def generate(_call):
-        return {
-            "response": json.dumps({
-                "relationship": "SUPPORTS",
-                "confidence": 0.9,
-                "reasoning": "The text directly supports the claim.",
-                "same_event": True,
-                "claim_aligned": True,
-                "directly_establishes_proposition": True,
-            })
-        }
+        return {"response": json.dumps({
+            "results": [{"evidence_id": "benchmark-1-1", "relationship": "SUPPORTED"}],
+        })}
 
     monkeypatch.setattr(ollama_verifier._LLM_RESILIENCE, "generate", generate)
     rows, _ = evaluate_dataset(
         [{
-            "claim": "A claim supported by evidence.",
+            "claim": "The drug reduces blood pressure.",
             "ground_truth_label": "SUPPORTED",
-            "evidence": "Direct support from the source.",
+            "evidence": "The drug reduces blood pressure.",
             "source": "Fixture source",
         }],
         mode="verifier-only",
@@ -415,7 +409,7 @@ def test_verifier_only_records_per_call_and_aggregate_diagnostics(monkeypatch):
     assert result["verifier_diagnostics"] == [{
         "evidence_index": 1,
         "evidence_id": "benchmark-1-1",
-        "evidence_text": "Direct support from the source.",
+        "evidence_text": "The drug reduces blood pressure.",
         "verification_relationship": "SUPPORTS",
         "confidence": 0.9,
         "same_event": True,
@@ -438,7 +432,7 @@ def test_verifier_only_records_per_call_and_aggregate_diagnostics(monkeypatch):
     assert result["runtime_diagnostics"]["timed_out"] is False
 
 
-def test_verifier_timeout_is_preserved_as_verification_error(monkeypatch):
+def test_verifier_timeout_fails_closed_as_unverified(monkeypatch):
     from rag_ingestion.llm_resilience import LLMInvocationError
     from rag_ingestion.verification import ollama_verifier
 
@@ -456,13 +450,13 @@ def test_verifier_timeout_is_preserved_as_verification_error(monkeypatch):
     )
 
     result = rows[0]
-    assert result["outcome"] == "PIPELINE_ERROR"
+    assert result["outcome"] == "UNVERIFIED"
     assert result["verifier_diagnostics"][0]["error_category"] == "timeout"
-    assert result["verifier_diagnostics"][0]["verification_status"] == "ERROR"
+    assert result["verifier_diagnostics"][0]["verification_status"] == "FAILED_CLOSED"
     assert result["runtime_diagnostics"]["timed_out"] is True
     assert result["runtime_diagnostics"]["error_categories"] == ["timeout"]
     assert result["per_example_diagnosis"] == "verification_error"
-    assert metrics["pipeline_error_count"] == 1
+    assert metrics["pipeline_error_count"] == 0
 
 
 def test_verifier_only_rejects_reference_ids_without_evidence_text():

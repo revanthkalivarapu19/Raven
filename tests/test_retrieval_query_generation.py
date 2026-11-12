@@ -3,6 +3,7 @@ import difflib
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -29,12 +30,18 @@ def _load_query_builder(responses=None):
                      '"Akashvani Bhavan"', '"INDIA bloc"']
     }])
     namespace = {
-        "re": re, "json": json, "difflib": difflib, "Optional": Optional,
+        "re": re, "json": json, "difflib": difflib, "time": time, "Optional": Optional,
         "LLMService": MockLLMService,
         "logger": logging.getLogger(__name__),
     }
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(graph_path), "exec"), namespace)
-    return namespace["_build_retrieval_queries"], MockLLMService
+    builder = namespace["_build_retrieval_queries"]
+
+    def build_expanded(*args, **kwargs):
+        kwargs.setdefault("force_expansion", True)
+        return builder(*args, **kwargs)
+
+    return build_expanded, MockLLMService
 
 
 def _assert_grounded(queries, source):
@@ -61,6 +68,32 @@ def test_political_input_is_dynamic_and_grounded():
     assert '"Akashvani Bhavan"' in " ".join(queries)
     assert '"INDIA bloc"' in " ".join(queries)
     _assert_grounded(queries, f"{claim} {context}")
+
+
+def test_concise_claim_uses_original_query_without_calling_planner(monkeypatch):
+    from agents import graph
+
+    def unexpected_planner_call(*_args, **_kwargs):
+        raise AssertionError("concise claim must bypass query planning")
+
+    monkeypatch.setattr(graph, "LLMService", unexpected_planner_call)
+    claim = "The Earth orbits the Sun once every year."
+    assert graph._build_retrieval_queries(claim, claim, "Science") == [claim]
+
+
+def test_herzog_eisenkot_breaking_news_claim_is_original_first_query(monkeypatch):
+    from agents import graph
+
+    def unexpected_planner_call(*_args, **_kwargs):
+        raise AssertionError("concise political breaking-news claims use the original query")
+
+    monkeypatch.setattr(graph, "LLMService", unexpected_planner_call)
+    claim = (
+        "Israeli President Isaac Herzog has tasked opposition politician Gadi "
+        "Eisenkot with forming a government in a major setback for Benjamin Netanyahu."
+    )
+
+    assert graph._build_retrieval_queries(claim, claim, "Politics") == [claim]
 
 
 def test_medical_input_uses_its_own_model_queries():

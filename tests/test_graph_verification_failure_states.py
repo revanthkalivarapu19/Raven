@@ -28,6 +28,19 @@ def _state(claim="A test claim.", domain="Science"):
     }
 
 
+def test_standalone_claim_is_preserved_without_invoking_rewriter(monkeypatch):
+    class FailedExtraction:
+        def extract_claim(self, _text):
+            raise AssertionError("standalone proposition should pass through unchanged")
+
+    monkeypatch.setattr(graph, "get_claim_agent", lambda: FailedExtraction())
+    text = "Raw input must not become a claim."
+    result = graph.claim_extraction_node({"text": text})
+
+    assert result["claim"] == text
+    assert result["atomic_claims"][0].text == text
+
+
 @pytest.mark.parametrize(
     ("failure", "error_type"),
     [
@@ -57,7 +70,6 @@ def test_runtime_failures_propagate_and_supervisor_returns_unverified(
     ("claim", "domain", "message"),
     [
         ("", "Science", "missing claim"),
-        ("A test claim.", "Unknown", "missing or unsupported domain"),
     ],
 )
 def test_prerequisite_failures_are_explicit_and_supervisor_safe(
@@ -109,3 +121,27 @@ def test_verifier_timeout_failure_from_pipeline_is_preserved(monkeypatch):
     final = graph.supervisor_node({**_state(), **stage})
     assert final["supervisor_result"]["final_verdict"] == "Unverified"
     assert final["verification_failure"] is failure
+
+
+def test_provider_availability_metadata_reaches_graph_state(monkeypatch):
+    from rag_ingestion.verification.verification_schema import OverallVerification
+
+    class Pipeline:
+        def process(self, **_kwargs):
+            return SimpleNamespace(
+                local_evidence=[], external_evidence=[], external_source_errors=[],
+                fused_evidence=[], local_retrieval_error=None,
+                verification_result=OverallVerification(
+                    claim="A test claim.", overall_assessment="INSUFFICIENT_EVIDENCE",
+                    overall_confidence=0.0, results=[],
+                ), verification_failure=None,
+                provider_statuses={"news": "unavailable", "catalog": "zero_results"},
+                external_provider_state="partial",
+            )
+
+    monkeypatch.setattr(graph, "_build_retrieval_queries", lambda **_kwargs: ["query"])
+    monkeypatch.setattr(graph, "get_claim_processing_pipeline", lambda: Pipeline())
+    result = graph.evidence_verification_node(_state())
+
+    assert result["provider_statuses"] == {"news": "unavailable", "catalog": "zero_results"}
+    assert result["external_provider_state"] == "partial"

@@ -3,8 +3,8 @@ graph.py
 ========
 RAVEN Project - Active LangGraph Workflow Orchestration
 
-Active pipeline:
-Input Processing -> Claim Extraction -> Domain Detection -> Evidence Verification -> Reflection -> Persona Analysis -> Supervisor -> XAI -> END
+Active verdict path:
+Input Processing -> Claim Extraction -> Domain Detection -> Evidence Verification -> Supervisor -> XAI -> END
 
 Preserves full segment provenance, language confidence, OCR metadata,
 and quality flags in the shared state without any intermediate NLP pipeline.
@@ -17,6 +17,7 @@ import os
 import re
 import sys
 import time
+from contextlib import nullcontext
 from typing import Optional, Dict, Any
 
 from langgraph.graph import StateGraph, START, END
@@ -24,6 +25,8 @@ from langgraph.graph import StateGraph, START, END
 from agents.state import RavenState
 from agents.input_processing.pipeline import process_input
 from agents.claim_extraction.claim_extraction_agent import ClaimExtractionAgent
+from agents.claim_decomposition import AtomicClaim, decompose_claim, is_likely_compound
+from agents.query_planner import plan_atomic_queries, plan_queries
 from agents.domain_detection.domain_agent import DomainDetectionAgent
 from rag_ingestion.pipeline.claim_processing import ClaimProcessingPipeline
 from agents.reflection.reflection_agent import ReflectionAgent
@@ -40,11 +43,16 @@ from rag_ingestion.verification.verification_schema import (
     VerificationFailure,
 )
 from rag_ingestion.config.config import config as _config
+from rag_ingestion.config.domains import canonical_domain
 from rag_ingestion.llm_resilience import request_deadline
+from rag_ingestion.request_budget import MAX_REQUEST_BUDGET_SECONDS
 
 logger = logging.getLogger(__name__)
 
-MAX_ATTEMPTS = 3
+MAX_ATTEMPTS = 2
+PERSONA_MAX_RUNTIME_SECONDS = 45
+XAI_MAX_RUNTIME_SECONDS = 30
+VERIFICATION_STAGE_RESERVE_SECONDS = 26.0
 
 
 def _request_deadline_exceeded(state: RavenState) -> bool:
@@ -60,6 +68,39 @@ def _stage_budget_available(state: RavenState, reserve_seconds: float = 0.0) -> 
 def _instrument_node(name, node):
     def wrapped(state):
         started = time.monotonic()
+        deadline = state.get("request_deadline_at")
+        if deadline is not None and started >= deadline:
+            logger.warning(
+                "graph_node_skipped name=%s reason=request_deadline_exceeded remaining_seconds=0",
+                name,
+            )
+            message = "The server-side request deadline was reached; processing stopped."
+            failure = VerificationFailure(
+                claim=state.get("claim") or state.get("text") or "",
+                evidence_count=len(state.get("fused_evidence") or []),
+                error_type="RequestDeadlineExceeded", message=message,
+            )
+            result = {
+                "errors": list(state.get("errors") or []) + ["request_deadline_exceeded"],
+                "request_deadline_exceeded": True,
+            }
+            if name == "claim_extraction":
+                result["claim"] = state.get("claim") or state.get("text") or ""
+            elif name == "domain_detection":
+                result["domain"] = {"domain": "Unknown", "confidence": 0.0, "reason": message}
+            elif name == "evidence_verification":
+                result.update(verification_result=None, verification_failure=failure)
+            elif name == "supervisor":
+                result["supervisor_result"] = {
+                    "final_verdict": "Unverified", "confidence_score": 0,
+                    "reasoning_summary": message, "key_evidence_used": [],
+                }
+            elif name == "xai":
+                result["final_output"] = {
+                    "final_verdict": "Unverified", "confidence": 0,
+                    "explanation": message,
+                }
+            return result
         result = node(state)
         finished = time.monotonic()
         diagnostics = dict(state.get("request_diagnostics") or {})
@@ -72,7 +113,16 @@ def _instrument_node(name, node):
             "duration_ms": (finished - started) * 1000.0,
         }
         diagnostics["nodes"] = node_times
+        invocations = list(diagnostics.get("node_invocations") or [])
+        invocations.append({
+            "name": name, "start": started, "end": finished,
+            "duration_seconds": finished - started,
+            "deadline_exceeded": bool(deadline and finished >= deadline),
+        })
+        diagnostics["node_invocations"] = invocations
+        diagnostics["graph_node_count"] = len(invocations)
         diagnostics.setdefault("stage_timings_ms", {})[name] = (finished - started) * 1000.0
+        diagnostics["stage_timings_ms"].update(result.get("stage_timings_ms") or {})
         logger.info("Stage %s completed in %.1f ms", name, (finished - started) * 1000.0)
         diagnostics["attempt_count"] = result.get("attempt_count", state.get("attempt_count", 1))
         result["request_diagnostics"] = diagnostics
@@ -82,13 +132,28 @@ HIGH_CONFIDENCE_THRESHOLD = 0.70
 
 
 def _build_retrieval_queries(
-    claim: str, retrieval_context: Optional[str] = None, domain: Optional[str] = None
+    claim: str, retrieval_context: Optional[str] = None, domain: Optional[str] = None,
+    *, force_expansion: bool = False,
 ) -> list[str]:
-    """Ask the model for focused retrieval queries, with a safe claim fallback."""
+    """Use a concise claim directly; expand only when explicitly needed."""
+    started = time.perf_counter()
     claim_text = (claim or "").strip()
     context_text = (retrieval_context or "").strip()
     if not claim_text:
         return []
+
+    word_count = len(re.findall(r"[^\W_]+(?:[.%][^\W_]+)*", claim_text))
+    is_concise_claim = (
+        word_count >= 5 and word_count <= 32 and len(claim_text) <= 280
+        and "\n" not in claim_text and claim_text.count("?") <= 1
+    )
+    if is_concise_claim and not force_expansion:
+        logger.info(
+            "performance_diag phase=query_planning elapsed_seconds=%.4f "
+            "mode=original_claim query_count=1",
+            time.perf_counter() - started,
+        )
+        return [claim_text]
 
     prompt = f"""Generate exactly 3 or 4 concise search queries for fact-checking.
 Return search phrases only: keyword or phrase searches, never questions or sentences.
@@ -249,12 +314,22 @@ Retrieval context: {context_text}
                              + ", ".join(missing_temporal_terms))
                         )
                         raise ValueError("query planner omitted claim temporal information")
+                logger.info(
+                    "performance_diag phase=query_planning elapsed_seconds=%.4f "
+                    "mode=expanded query_count=%d",
+                    time.perf_counter() - started, len(queries),
+                )
                 return queries
             raise ValueError("query planner returned malformed or ungrounded queries")
         except Exception as error:
             logger.warning(
                 "Retrieval query planning attempt %d failed: %s", attempt + 1, error
             )
+    logger.info(
+        "performance_diag phase=query_planning elapsed_seconds=%.4f "
+        "mode=fallback_original query_count=1",
+        time.perf_counter() - started,
+    )
     return [claim_text]
 
 
@@ -371,18 +446,60 @@ def claim_extraction_node(state: RavenState) -> Dict[str, Any]:
 
     try:
         agent = get_claim_agent()
-        claim = agent.extract_claim(claim_input)
+        generator = getattr(getattr(agent, "llm", None), "generate", None)
+        stage_timings = {}
+        stage_started = time.perf_counter()
+        if is_likely_compound(claim_input) and generator is not None:
+            decomposition = decompose_claim(
+                claim_input, fallback_claim="", generate=generator,
+            )
+            stage_timings["claim_decomposition"] = (time.perf_counter() - stage_started) * 1000.0
+            if decomposition.used_fallback:
+                # A failed compound decomposition must retain the complete
+                # user proposition. A separate concise-claim rewrite can
+                # silently discard clauses and make a fragment appear verified.
+                claim = claim_input.strip()
+                stage_started = time.perf_counter()
+                fallback_decomposition = decompose_claim(
+                    claim_input, fallback_claim=claim_input,
+                )
+                stage_timings["claim_decomposition_fallback"] = (time.perf_counter() - stage_started) * 1000.0
+                decomposition = fallback_decomposition.model_copy(update={
+                    "used_fallback": True,
+                    "failure_category": decomposition.failure_category,
+                })
+            else:
+                claim = claim_input.strip()
+        else:
+            # Preserve a standalone proposition exactly as supplied. The
+            # extractor may shorten a date-led event claim to its date, which
+            # can then be falsely verified as a different proposition.
+            claim = claim_input.strip()
+            stage_started = time.perf_counter()
+            decomposition = decompose_claim(
+                claim_input, fallback_claim=claim,
+            )
+            stage_timings["claim_decomposition"] = (time.perf_counter() - stage_started) * 1000.0
         from rag_ingestion.verification.claim_scope import classify_claim_scope
+        root_claim = claim_input.strip() if len(decomposition.claims) > 1 else claim
         return {
-            "claim": claim,
+            "claim": root_claim,
+            "atomic_claims": decomposition.claims,
+            "decomposition_diagnostics": {
+                "used_fallback": decomposition.used_fallback,
+                "failure_category": decomposition.failure_category,
+                "component_count": len(decomposition.claims),
+            },
+            "stage_timings_ms": stage_timings,
             "claim_scope": state.get("claim_scope") or classify_claim_scope(claim),
         }
     except Exception as e:
         logger.exception(f"Error in claim_extraction_node: {e}")
-        from rag_ingestion.verification.claim_scope import classify_claim_scope
         return {
-            "claim": claim_input.strip(),
-            "claim_scope": state.get("claim_scope") or classify_claim_scope(claim_input.strip()),
+            # Do not pass unextracted input into domain detection or evidence
+            # retrieval after claim extraction has failed. The supervisor's
+            # existing missing-verification safety path will return Unverified.
+            "claim": "",
             "errors": (state.get("errors", []) + [f"claim_extraction_error: {e}"])
         }
 
@@ -409,8 +526,12 @@ def domain_detection_node(state: RavenState) -> Dict[str, Any]:
 
     try:
         agent = get_domain_agent()
+        started = time.perf_counter()
         domain_result = agent.detect_domain(claim)
-        return {"domain": domain_result}
+        return {
+            "domain": domain_result,
+            "stage_timings_ms": {"domain_detection": (time.perf_counter() - started) * 1000.0},
+        }
     except Exception as e:
         logger.exception(f"Error in domain_detection_node: {e}")
         return {
@@ -470,10 +591,9 @@ def _legacy_evidence_verification_node(state: RavenState) -> Dict[str, Any]:
             or claim
         ).strip()
 
-        retrieval_queries = _build_retrieval_queries(
-            claim=claim,
-            retrieval_context=retrieval_context,
-            domain=domain,
+        retrieval_queries = plan_queries(
+            claim, context=retrieval_context, domain=domain,
+            expanded_planner=_build_retrieval_queries,
         )
 
         logger.info(
@@ -483,6 +603,7 @@ def _legacy_evidence_verification_node(state: RavenState) -> Dict[str, Any]:
         errors = list(state.get("errors", []))
         local_evidence_by_id = {}
         external_evidence_by_id = {}
+        provider_statuses = {}
         local_retrieval_error = None
 
         for retrieval_query in retrieval_queries:
@@ -507,6 +628,18 @@ def _legacy_evidence_verification_node(state: RavenState) -> Dict[str, Any]:
                 domain=domain,
                 top_k=5,
             )
+            for provider_name, status in getattr(external_result, "provider_statuses", {}).items():
+                previous = provider_statuses.get(provider_name)
+                if status.startswith("skipped_") and previous:
+                    continue
+                if previous in {"success", "zero_results"} and status in {
+                    "unavailable", "timed_out", "rate_limited", "request_failed"
+                }:
+                    provider_statuses[provider_name] = "partial_failure"
+                elif previous == "partial_failure":
+                    continue
+                else:
+                    provider_statuses[provider_name] = status
 
             for item in local_evidence:
                 local_evidence_by_id[item.evidence_id] = item
@@ -565,6 +698,20 @@ def _legacy_evidence_verification_node(state: RavenState) -> Dict[str, Any]:
             "fused_evidence": fused_evidence,
             "verification_result": verification_result,
             "verification_failure": verification_failure,
+            "provider_statuses": provider_statuses,
+            "external_provider_state": (
+                "not_applicable" if not any(
+                    not status.startswith("skipped_") for status in provider_statuses.values()
+                ) else "partial" if any(
+                    status in {"partial_failure", "success", "zero_results"} for status in provider_statuses.values()
+                ) and any(
+                    status in {"unavailable", "timed_out", "rate_limited", "request_failed", "partial_failure"}
+                    for status in provider_statuses.values()
+                ) else "provider_unavailable" if any(
+                    status in {"unavailable", "timed_out", "rate_limited", "request_failed"}
+                    for status in provider_statuses.values()
+                ) else "results_available" if external_evidence else "zero_results"
+            ),
             "errors": errors,
         }
 
@@ -589,14 +736,14 @@ def _legacy_evidence_verification_node(state: RavenState) -> Dict[str, Any]:
 def evidence_verification_node(state: RavenState) -> Dict[str, Any]:
     """Build retrieval queries and delegate retrieval/verification to the pipeline."""
     logger.info("Executing Graph Node: [evidence_verification]")
-    if state.get("request_deadline_at") and not _stage_budget_available(state, 2 * _config.timeout_seconds):
+    if state.get("request_deadline_at") and not _stage_budget_available(state, VERIFICATION_STAGE_RESERVE_SECONDS):
         remaining = state["request_deadline_at"] - time.monotonic()
         logger.info(
             "evidence_diag graph_stage_skip stage=evidence_verification "
             "reason=insufficient_reserved_budget remaining_seconds=%.2f "
             "required_reserve_seconds=%.2f deadline_reached=%s",
             max(0.0, remaining),
-            2 * _config.timeout_seconds,
+            VERIFICATION_STAGE_RESERVE_SECONDS,
             remaining <= 0,
         )
         deadline_exceeded = _request_deadline_exceeded(state)
@@ -631,8 +778,8 @@ def evidence_verification_node(state: RavenState) -> Dict[str, Any]:
         if isinstance(domain_state, dict)
         else str(domain_state)
     )
-    if not claim.strip() or not domain.strip() or domain.lower() == "unknown":
-        reason = "missing claim" if not claim.strip() else "missing or unsupported domain"
+    if not claim.strip():
+        reason = "missing claim"
         failure = VerificationFailure(
             claim=claim,
             evidence_count=0,
@@ -642,21 +789,52 @@ def evidence_verification_node(state: RavenState) -> Dict[str, Any]:
         return {
             "local_evidence": [], "external_evidence": [], "fused_evidence": [],
             "verification_result": None, "verification_failure": failure,
+            "provider_statuses": {},
+            "external_provider_state": "not_applicable",
             "errors": state.get("errors", []) + [
                 f"evidence_verification_error: {reason}"
             ],
         }
     try:
+        has_atomic_claims = bool(state.get("atomic_claims"))
+        if has_atomic_claims:
+            return _verify_atomic_claims(state, state["atomic_claims"], domain)
+        normalized_domain = canonical_domain(domain.strip())
+        if normalized_domain == "unknown":
+            general_index = _config.data_dir / "vector_store" / "general" / "index.faiss"
+            # External providers remain useful even when no local general
+            # index has been provisioned. The pipeline handles FAISS absence.
+            retrieval_domain = "General"
+            logger.info(
+                "evidence_diag unknown_domain retrieval_domain=%s general_index_available=%s "
+                "domain_confidence_preserved=true",
+                retrieval_domain,
+                general_index.is_file(),
+            )
+        elif normalized_domain in {"medical", "political", "science", "finance", "general"}:
+            retrieval_domain = (
+                normalized_domain
+                if normalized_domain != domain.strip().lower()
+                else domain
+            )
+        else:
+            retrieval_domain = "General"
+        if retrieval_domain != domain:
+            logger.info(
+                "evidence_diag domain_fallback original=%r retrieval_domain=%s confidence_unchanged=true",
+                domain, retrieval_domain,
+            )
         retrieval_context = (
             state.get("processed_text") or state.get("text") or claim
         ).strip()
-        queries = _build_retrieval_queries(
-            claim=claim, retrieval_context=retrieval_context, domain=domain
+        queries = plan_queries(
+            claim, context=retrieval_context, domain=domain,
+            expanded_planner=_build_retrieval_queries,
         )
         result = get_claim_processing_pipeline().process(
             claim=claim, claim_scope=state.get("claim_scope"),
-            domain=domain, retrieval_queries=queries,
-            top_k_local=5, top_k_external=5, top_k_fused=5,
+            domain=retrieval_domain, retrieval_queries=queries,
+            top_k_local=5, top_k_external=5, top_k_fused=3,
         )
         errors = list(state.get("errors", []))
         errors.extend(
@@ -704,6 +882,10 @@ def evidence_verification_node(state: RavenState) -> Dict[str, Any]:
             "fused_evidence": fused_evidence,
             "verification_result": verification_result,
             "verification_failure": verification_failure,
+            "provider_statuses": dict(getattr(result, "provider_statuses", {}) or {}),
+            "provider_diagnostics": dict(getattr(result, "provider_diagnostics", {}) or {}),
+            "retrieval_diagnostics": dict(getattr(result, "retrieval_diagnostics", {}) or {}),
+            "external_provider_state": getattr(result, "external_provider_state", "not_applicable"),
             "errors": errors,
         }
     except Exception as e:
@@ -716,10 +898,205 @@ def evidence_verification_node(state: RavenState) -> Dict[str, Any]:
         return {
             "local_evidence": [], "external_evidence": [], "fused_evidence": [],
             "verification_result": None, "verification_failure": failure,
+            "provider_statuses": {}, "external_provider_state": "provider_unavailable",
             "errors": state.get("errors", []) + [
                 f"evidence_verification_error: {failure}"
             ],
         }
+
+
+def _verify_atomic_claims(state: RavenState, atomic_claims, domain: str) -> Dict[str, Any]:
+    """Reuse the existing local-first pipeline independently for each claim."""
+    from rag_ingestion.verification.claim_scope import classify_claim_scope
+
+    pipeline = get_claim_processing_pipeline()
+    records = []
+    errors = list(state.get("errors", []))
+    local_by_id, external_by_id, fused_by_id = {}, {}, {}
+    statuses: dict[str, str] = {}
+    provider_diagnostics: dict[str, dict[str, Any]] = {}
+    stage_timings: dict[str, float] = {}
+    root_claim = state.get("claim") or ""
+    for component in atomic_claims:
+        atom = component.model_copy(update={"domain": component.domain or domain})
+        if state.get("request_deadline_at") and not _stage_budget_available(state, VERIFICATION_STAGE_RESERVE_SECONDS):
+            failure = VerificationFailure(
+                claim=atom.text, evidence_count=0,
+                error_type="InsufficientRemainingBudget",
+                message="Component verification skipped because the request budget is exhausted.",
+            )
+            records.append({"claim": atom, "verification_failure": failure})
+            continue
+        atom_domain = canonical_domain(atom.domain or "Unknown")
+        if atom_domain == "unknown":
+            # Domain uncertainty is not a retrieval failure. General enables
+            # the general FAISS index when present and current-news providers.
+            atom_domain = "general"
+        query_started = time.perf_counter()
+        queries = plan_atomic_queries(
+            atom.text,
+            # Query only this atom's proposition; borrowing entities from the
+            # root compound can make one component's retrieval prove another.
+            context=atom.text,
+            include_current_date=(atom_domain in {"political", "general"}),
+        )
+        stage_timings["query_planning"] = stage_timings.get("query_planning", 0.0) + (time.perf_counter() - query_started) * 1000.0
+        logger.info(
+            "retrieval_component component_id=%s component_text=%r generated_queries=%s",
+            atom.id, atom.text, queries,
+        )
+        atom = atom.model_copy(update={"search_queries": queries})
+        try:
+            retrieval_started = time.perf_counter()
+            result = pipeline.process(
+                claim=atom.text,
+                claim_id=atom.id,
+                claim_scope=classify_claim_scope(atom.text),
+                domain=atom_domain,
+                retrieval_queries=queries[:3],
+                top_k_local=5, top_k_external=5, top_k_fused=3,
+            )
+            local_by_id.update({item.evidence_id: item for item in result.local_evidence})
+            external_by_id.update({item.evidence_id: item for item in result.external_evidence})
+            fused_by_id.update({item.evidence_id: item for item in result.fused_evidence})
+            result_statuses = getattr(result, "provider_statuses", {}) or {}
+            statuses.update({f"{atom.id}:{name}": value for name, value in result_statuses.items()})
+            for name, diagnostic in (getattr(result, "provider_diagnostics", {}) or {}).items():
+                provider_diagnostics[f"{atom.id}:{name}"] = {**diagnostic, "claim_id": atom.id}
+            errors.extend(
+                f"claim={atom.id} provider={error.provider_name} category={error.category}"
+                for error in (getattr(result, "external_source_errors", []) or [])
+            )
+            records.append({
+                "claim": atom,
+                "component_id": atom.id,
+                "component_text": atom.text,
+                "queries": queries,
+                "evidence": result.fused_evidence,
+                "local_evidence": result.local_evidence,
+                "external_evidence": result.external_evidence,
+                "fused_evidence": result.fused_evidence,
+                "verification_result": result.verification_result,
+                "relationship": [
+                    {
+                        "evidence_id": item.evidence_id,
+                        "relationship": item.relationship,
+                        "confidence": item.confidence,
+                    }
+                    for item in (result.verification_result.results if result.verification_result else [])
+                ],
+                "confidence": result.verification_result.overall_confidence if result.verification_result else 0.0,
+                "verification_failure": result.verification_failure,
+                "provider_statuses": result_statuses,
+                "retrieval_diagnostics": getattr(result, "retrieval_diagnostics", {}),
+            })
+            evidence_by_id = {item.evidence_id: item for item in result.fused_evidence}
+            for item in (result.verification_result.results if result.verification_result else []):
+                source_item = evidence_by_id.get(item.evidence_id)
+                logger.info(
+                    "evidence_gate_component claim_id=%s claim=%r source=%r url=%r provider=%r "
+                    "excerpt=%r verifier_relationship=%s constraint_check=%s final_relationship=%s "
+                    "rejection_reason=%r",
+                    atom.id, atom.text,
+                    getattr(source_item, "source", None), getattr(source_item, "url", None),
+                    getattr(source_item, "retrieval_method", None),
+                    getattr(item, "direct_evidence_excerpt", None),
+                    getattr(item, "verifier_relationship", None),
+                    getattr(item, "constraint_result", None), item.relationship,
+                    getattr(item, "rejection_reason", None),
+                )
+            stage_timings["retrieval_pipeline"] = stage_timings.get("retrieval_pipeline", 0.0) + (time.perf_counter() - retrieval_started) * 1000.0
+        except Exception as exc:
+            failure = VerificationFailure.from_exception(atom.text, 0, exc)
+            records.append({"claim": atom, "verification_failure": failure})
+            errors.append(f"claim={atom.id} verification_error={failure.error_type}")
+
+    assessment, confidence, results, failure = _aggregate_claim_records(root_claim, records)
+    overall = None if failure else OverallVerification(
+        claim=root_claim,
+        claim_scope=classify_claim_scope(root_claim),
+        results=results,
+        overall_assessment=assessment,
+        overall_confidence=confidence,
+    )
+    return {
+        "atomic_claims": atomic_claims,
+        "stage_timings_ms": stage_timings,
+        "claim_results": records,
+        "local_evidence": list(local_by_id.values()),
+        "external_evidence": list(external_by_id.values()),
+        "fused_evidence": list(fused_by_id.values()),
+        "verification_result": overall,
+        "verification_failure": failure,
+        "provider_statuses": statuses,
+        "provider_diagnostics": provider_diagnostics,
+        "retrieval_diagnostics": {
+            "claims": [
+                {
+                    "component_id": record.get("component_id", getattr(record.get("claim"), "id", None)),
+                    "component_text": record.get("component_text", getattr(record.get("claim"), "text", None)),
+                    "queries": record.get("queries", []),
+                    **(record.get("retrieval_diagnostics", {}) or {}),
+                }
+                for record in records
+            ],
+            "providers": list(provider_diagnostics.values()),
+        },
+        "external_provider_state": _provider_state(statuses.values()),
+        "errors": errors,
+    }
+
+
+def _aggregate_claim_records(root_claim: str, records: list[dict[str, Any]]):
+    """Only complete, homogeneous component outcomes establish a compound claim."""
+    failure = next((item.get("verification_failure") for item in records if item.get("verification_failure") is not None), None)
+    if not records:
+        return "INSUFFICIENT_EVIDENCE", 0.0, [], failure or VerificationFailure(
+            claim=root_claim, evidence_count=0, error_type="MissingComponentResult",
+            message="One or more atomic claims have no verification result.",
+        )
+    assessments, results, confidences = [], [], []
+    for record in records:
+        verification = record.get("verification_result")
+        if verification is None:
+            if failure is None:
+                failure = VerificationFailure(
+                    claim=root_claim, evidence_count=0, error_type="MissingComponentResult",
+                    message="One or more atomic claims have no verification result.",
+                )
+            continue
+        assessment = str(getattr(verification.overall_assessment, "value", verification.overall_assessment))
+        assessments.append(assessment)
+        confidences.append(float(verification.overall_confidence))
+        results.extend(verification.results)
+    # A compound claim is false when any required component is directly
+    # contradicted. A different component failing verification cannot erase
+    # that established contradiction.
+    if "CONTRADICTED" in assessments:
+        return "CONTRADICTED", max(
+            confidence for assessment, confidence in zip(assessments, confidences)
+            if assessment == "CONTRADICTED"
+        ), results, None
+    if failure is not None:
+        return "INSUFFICIENT_EVIDENCE", 0.0, results, failure
+    if len(set(assessments)) != 1 or assessments[0] not in {"SUPPORTED", "CONTRADICTED"}:
+        # Differently assessed components do not imply that sources conflict
+        # about the same proposition. Preserve each component's own result.
+        return "INSUFFICIENT_EVIDENCE", 0.0, results, None
+    return assessments[0], min(confidences), results, None
+
+
+def _provider_state(statuses) -> str:
+    statuses = [status for status in statuses if not status.startswith("skipped_")]
+    if not statuses:
+        return "not_applicable"
+    succeeded = any(s in {"success", "zero_results", "partial_failure"} for s in statuses)
+    failed = any(s in {"unavailable", "timed_out", "rate_limited", "request_failed", "partial_failure"} for s in statuses)
+    if succeeded and failed:
+        return "partial"
+    if failed:
+        return "provider_unavailable"
+    return "results_available" if "success" in statuses else "zero_results"
 
 
 def reflection_node(state: RavenState) -> Dict[str, Any]:
@@ -845,7 +1222,7 @@ def reflection_node(state: RavenState) -> Dict[str, Any]:
 def persona_analysis_node(state: RavenState) -> Dict[str, Any]:
     """Node 6: Run journalist, legal, and scientific persona analyses."""
     logger.info("Executing Graph Node: [persona_analysis]")
-    persona_and_downstream_reserve = 8 * _config.timeout_seconds
+    persona_and_downstream_reserve = _config.timeout_seconds
     if state.get("request_deadline_at") and not _stage_budget_available(state, persona_and_downstream_reserve):
         remaining = state["request_deadline_at"] - time.monotonic()
         deadline_exceeded = _request_deadline_exceeded(state)
@@ -900,44 +1277,67 @@ def persona_analysis_node(state: RavenState) -> Dict[str, Any]:
 
     allowed_evidence_ids = {getattr(item, "evidence_id", None) for item in evidence}
     allowed_evidence_ids.discard(None)
+    persona_deadline = None
+    request_deadline_at = state.get("request_deadline_at")
+    if request_deadline_at:
+        persona_deadline = min(
+            request_deadline_at - _config.timeout_seconds,
+            time.monotonic() + PERSONA_MAX_RUNTIME_SECONDS,
+        )
+        if persona_deadline <= time.monotonic():
+            return {
+                "persona_insights": [],
+                "errors": state.get("errors", []) + [
+                    "persona_analysis_skipped: insufficient_remaining_budget"
+                ],
+            }
 
     try:
-        context = SupervisorAgent.build_context(
-            claim=claim,
-            domain=domain,
-            evidence=evidence,
-            verification_results=verification.results,
+        deadline_context = (
+            request_deadline(persona_deadline)
+            if persona_deadline is not None
+            else nullcontext()
         )
+        with deadline_context:
+            context = SupervisorAgent.build_context(
+                claim=claim,
+                domain=domain,
+                evidence=evidence,
+                verification_results=verification.results,
+            )
 
-        insights = []
-        errors = list(state.get("errors", []))
+            insights = []
+            errors = list(state.get("errors", []))
 
-        for persona in get_persona_agents():
-            try:
-                insight = persona.analyze(context)
-                raw_ids = (
-                    insight.get("evidence_ids") if isinstance(insight, dict)
-                    else getattr(insight, "evidence_ids", None)
-                )
-                if (not isinstance(raw_ids, list) or not raw_ids
-                        or any(not isinstance(eid, str) or eid not in allowed_evidence_ids for eid in raw_ids)):
-                    raise ValueError("persona output contains invalid evidence_ids")
-                insights.append(insight)
+            for persona in get_persona_agents():
+                if persona_deadline is not None and time.monotonic() >= persona_deadline:
+                    errors.append("persona_analysis_skipped: runtime_budget_exhausted")
+                    break
+                try:
+                    insight = persona.analyze(context)
+                    raw_ids = (
+                        insight.get("evidence_ids") if isinstance(insight, dict)
+                        else getattr(insight, "evidence_ids", None)
+                    )
+                    if (not isinstance(raw_ids, list) or not raw_ids
+                            or any(not isinstance(eid, str) or eid not in allowed_evidence_ids for eid in raw_ids)):
+                        raise ValueError("persona output contains invalid evidence_ids")
+                    insights.append(insight)
 
-                logger.info(
-                    "Persona [%s] completed successfully.",
-                    persona.name,
-                )
+                    logger.info(
+                        "Persona [%s] completed successfully.",
+                        persona.name,
+                    )
 
-            except Exception as persona_error:
-                logger.exception(
-                    "Persona [%s] failed: %s",
-                    persona.name,
-                    persona_error,
-                )
-                errors.append(
-                    f"persona_{persona.name}_error: {persona_error}"
-                )
+                except Exception as persona_error:
+                    logger.exception(
+                        "Persona [%s] failed: %s",
+                        persona.name,
+                        persona_error,
+                    )
+                    errors.append(
+                        f"persona_{persona.name}_error: {persona_error}"
+                    )
 
         return {
             "persona_insights": insights,
@@ -966,28 +1366,6 @@ def supervisor_node(state: RavenState) -> Dict[str, Any]:
     from rag_ingestion.verification.claim_scope import (
         classify_claim_scope, verification_can_establish_claim,
     )
-    if state.get("request_deadline_at") and not _stage_budget_available(state, _config.timeout_seconds):
-        deadline_exceeded = _request_deadline_exceeded(state)
-        if deadline_exceeded:
-            reasoning_summary = "Request deadline exceeded before supervisor completion."
-            skip_reason = "request_deadline_exceeded: supervisor fallback"
-        else:
-            reasoning_summary = (
-                "Supervisor was skipped because the remaining execution budget "
-                "was insufficient for the supervisor step."
-            )
-            skip_reason = "supervisor_skipped: insufficient_remaining_budget"
-        return {
-            "supervisor_result": {
-                "final_verdict": "Unverified",
-                "confidence_score": 0,
-                "trust_score": 0,
-                "reasoning_summary": reasoning_summary,
-                "key_evidence_used": [],
-            },
-            "errors": state.get("errors", []) + [skip_reason],
-        }
-
     claim = state.get("claim") or ""
     domain_state = state.get("domain") or {}
     evidence_list = state.get("fused_evidence") or []
@@ -1046,6 +1424,38 @@ def supervisor_node(state: RavenState) -> Dict[str, Any]:
                 ),
             }
 
+        component_records = state.get("claim_results") or []
+        if component_records:
+            component_assessments = []
+            for record in component_records:
+                component_verification = record.get("verification_result")
+                if record.get("verification_failure") is not None or component_verification is None:
+                    return {"supervisor_result": unverified_result(
+                        "At least one atomic claim did not complete verification."
+                    )}
+                component_assessment = component_verification.overall_assessment
+                component_assessment = str(getattr(component_assessment, "value", component_assessment))
+                if component_assessment not in {"SUPPORTED", "CONTRADICTED"}:
+                    return {"supervisor_result": unverified_result(
+                        "At least one atomic claim has insufficient or conflicting evidence."
+                    )}
+                required = "SUPPORTS" if component_assessment == "SUPPORTED" else "CONTRADICTS"
+                component_scope = component_verification.claim_scope
+                eligible = any(
+                    str(getattr(getattr(item, "relationship", None), "value", getattr(item, "relationship", None))) == required
+                    and verification_can_establish_claim(item, component_scope)
+                    for item in component_verification.results
+                )
+                if not eligible:
+                    return {"supervisor_result": unverified_result(
+                        "At least one atomic claim lacks directly establishing evidence."
+                    )}
+                component_assessments.append(component_assessment)
+            if len(set(component_assessments)) != 1:
+                return {"supervisor_result": unverified_result(
+                    "Atomic claims produced mixed results; the compound claim remains Unverified."
+                )}
+
         # Safety gate: unresolved conflicting evidence must not be converted
         # directly into a definitive Real/Fake verdict by the LLM.
         verification_assessment = None
@@ -1086,7 +1496,7 @@ def supervisor_node(state: RavenState) -> Dict[str, Any]:
             getattr(verification_assessment, "value", verification_assessment)
         ).split(".")[-1]
 
-        if assessment_name in {"SUPPORTED", "CONTRADICTED"} and verification_results:
+        if assessment_name in {"SUPPORTED", "CONTRADICTED"}:
             required_relationship = (
                 "SUPPORTS" if assessment_name == "SUPPORTED" else "CONTRADICTS"
             )
@@ -1151,27 +1561,41 @@ def supervisor_node(state: RavenState) -> Dict[str, Any]:
                 },
             }
 
-        supervisor_input = {
-            "claim_text": claim,
-            "domain": domain,
-            "evidence_list": evidence_list,
-            "reflection_notes": reflection_result,
-            "persona_insights": persona_insights,
-            "verification_result": verification_result,
-            "attempt_count": attempt_count,
-            "maximum_attempts_reached": maximum_attempts_reached,
-        }
+        # Verification is the authoritative decision. Once the deterministic
+        # gates above pass, return its mapping immediately; supervisor LLM
+        # latency or failure must never suppress an eligible result.
+        if assessment_name in {"SUPPORTED", "CONTRADICTED"}:
+            verdict = "Real" if assessment_name == "SUPPORTED" else "Fake"
+            confidence = verification_result.get("overall_confidence", 0.0) if isinstance(verification_result, dict) else getattr(verification_result, "overall_confidence", 0.0)
+            confidence = max(0.0, min(100.0, float(confidence or 0.0) * 100.0))
+            evidence_ids = [
+                str(getattr(item, "evidence_id", None) or (item.get("evidence_id") if isinstance(item, dict) else ""))
+                for item in verification_results
+                if relationship_name(item) == ("SUPPORTS" if assessment_name == "SUPPORTED" else "CONTRADICTS")
+                and verification_can_establish_claim(item, claim_scope)
+            ]
+            component_count = len(component_records)
+            summary = f"Deterministic verification assessed the claim as {assessment_name.lower()}."
+            if component_count > 1:
+                summary = f"All {component_count} atomic claims were independently assessed as {assessment_name.lower()}."
+            return {
+                "supervisor_result": {
+                    "final_verdict": verdict,
+                    "confidence_score": confidence,
+                    "trust_score": confidence,
+                    "reasoning_summary": summary,
+                    "key_evidence_used": [item for item in evidence_ids if item],
+                },
+            }
 
-        result = get_supervisor_agent()(supervisor_input)
-
-        logger.info(
-            "Supervisor completed with verdict: %s",
-            result.get("final_verdict"),
-        )
-
-        return {
-            "supervisor_result": result,
-        }
+        # Unknown or malformed verification states are never delegated to an
+        # LLM for classification.
+        if assessment_name not in {"SUPPORTED", "CONTRADICTED"}:
+            return {
+                "supervisor_result": unverified_result(
+                    "Verification did not produce a recognized definitive assessment."
+                ),
+            }
 
     except Exception as e:
         logger.exception(
@@ -1229,7 +1653,7 @@ def xai_node(state: RavenState) -> Dict[str, Any]:
                     "generated because the remaining execution budget was considered "
                     "insufficient for the XAI step."
                 )
-            elif assessment == "CONFLICTING_EVIDENCE":
+            elif assessment == "CONFLICTING_EVIDENCE" and evidence_list:
                 explanation = (
                     "Raven determined the claim as Unverified because verification "
                     "found conflicting evidence. A detailed explanation was not "
@@ -1260,68 +1684,84 @@ def xai_node(state: RavenState) -> Dict[str, Any]:
         domain = str(domain_state) if domain_state else "General"
 
     if not claim.strip():
+        verdict = str(supervisor_result.get("final_verdict") or "Unverified")
+        confidence = supervisor_result.get("confidence_score", 0)
+        explanation = (
+            "Raven returned Unverified because screenshot text could not be interpreted with sufficient confidence."
+            if state.get("had_image") and "low_ocr_confidence" in (state.get("quality_flags") or [])
+            else "Raven returned Unverified because no claim was available for explanation."
+        )
         return {
-            "final_output": {},
+            "final_output": {
+                "final_verdict": verdict,
+                "confidence": confidence,
+                "explanation": explanation,
+            },
             "errors": state.get("errors", []) + [
-                "xai_error: no claim available"
+                "xai_skipped: no claim available"
             ],
         }
 
     if not supervisor_result:
         return {
-            "final_output": {},
-            "errors": state.get("errors", []) + [
-                "xai_error: no supervisor result available"
-            ],
-        }
-
-    try:
-        agent = get_xai_agent()
-
-        final_output = agent.explain(
-            claim_text=claim,
-            domain=domain,
-            evidence_list=evidence_list,
-            reflection_result=reflection_result,
-            supervisor_result=supervisor_result,
-            attempt_count=attempt_count,
-            maximum_attempts_reached=maximum_attempts_reached,
-        )
-
-        temporal_context = build_temporal_context(claim, evidence_list)
-        final_output["temporal_context"] = temporal_context
-
-        logger.info(
-            "XAI completed with verdict: %s",
-            final_output.get("final_verdict"),
-        )
-
-        return {
-            "final_output": final_output,
-            "temporal_context": temporal_context,
-        }
-
-    except Exception as e:
-        logger.exception(f"Error in xai_node: {e}")
-
-        verdict = str(supervisor_result.get("final_verdict") or "Unverified")
-        if verdict.lower() == "supported":
-            explanation = "Raven determined the claim as Supported. The explanation model was unavailable."
-        elif verdict.lower() == "contradicted":
-            explanation = "Raven determined the claim as Contradicted. The explanation model was unavailable."
-        else:
-            explanation = "Raven determined the claim as Unverified because the available evidence was insufficient. The explanation model was unavailable."
-
-        return {
             "final_output": {
-                "final_verdict": verdict,
-                "confidence": supervisor_result.get("confidence_score", 0),
-                "explanation": explanation,
+                "final_verdict": "Unverified",
+                "confidence": 0,
+                "explanation": (
+                    "Raven returned Unverified because the final safety review "
+                    "could not complete within the available request budget."
+                ),
             },
             "errors": state.get("errors", []) + [
-                f"xai_error: {e}"
+                "xai_skipped: no supervisor result available"
             ],
         }
+
+    verdict = str(supervisor_result.get("final_verdict") or "Unverified")
+    verification = state.get("verification_result")
+    assessment = (
+        verification.get("overall_assessment")
+        if isinstance(verification, dict)
+        else getattr(verification, "overall_assessment", None)
+    )
+    assessment = str(getattr(assessment, "value", assessment)).split(".")[-1]
+    if assessment == "CONFLICTING_EVIDENCE" and evidence_list:
+        explanation = "Raven returned Unverified because verification found conflicting evidence."
+    elif not evidence_list:
+        explanation = "Raven returned Unverified because no reliable evidence was found for this claim."
+    elif assessment == "INSUFFICIENT_EVIDENCE" or verdict.lower() == "unverified":
+        explanation = "Raven returned Unverified because the available evidence was insufficient or verification could not complete."
+    else:
+        explanation = f"Raven determined the claim as {verdict}. The detailed explanation is unavailable in the non-blocking response."
+
+    component_records = state.get("claim_results") or []
+    if component_records:
+        component_summaries = []
+        for record in component_records:
+            component = record.get("claim")
+            component_id = str(getattr(component, "id", "C?"))
+            component_text = str(getattr(component, "text", "")).strip()
+            component_verification = record.get("verification_result")
+            component_assessment = getattr(component_verification, "overall_assessment", None)
+            component_assessment = str(getattr(component_assessment, "value", component_assessment) or "INSUFFICIENT_EVIDENCE").split(".")[-1]
+            evidence_count = len(record.get("fused_evidence") or [])
+            component_summaries.append(
+                f"{component_id} ({component_assessment.lower()}, {evidence_count} evidence item(s)): {component_text}"
+            )
+        explanation += " Components: " + "; ".join(component_summaries)
+
+    temporal_context = build_temporal_context(claim, evidence_list)
+    logger.info("XAI skipped: deterministic explanation returned without waiting for the model.")
+    return {
+        "final_output": {
+            "final_verdict": verdict,
+            "confidence": supervisor_result.get("confidence_score", 0),
+            "explanation": explanation,
+            "temporal_context": temporal_context,
+        },
+        "temporal_context": temporal_context,
+        "errors": state.get("errors", []) + ["xai_skipped: non_blocking_deterministic_explanation"],
+    }
 
 
 def retry_evidence_node(state: RavenState) -> Dict[str, Any]:
@@ -1377,17 +1817,10 @@ def should_retry_after_reflection(state: RavenState) -> str:
     # Preserve the failure and continue to the existing safety path instead of
     # repeatedly invoking evidence retrieval with invalid inputs.
     domain_state = state.get("domain") or {}
-    domain_name = (
-        domain_state.get("domain") if isinstance(domain_state, dict) else str(domain_state)
-    ) or ""
     if (
         not str(state.get("claim") or "").strip()
-        or not domain_name.strip()
-        or domain_name.strip().lower() == "unknown"
         or any(
             "claim_extraction_error" in error
-            or "domain_detection_error" in error
-            or "missing claim or valid domain" in error
             for error in errors
         )
     ):
@@ -1409,6 +1842,19 @@ def should_retry_after_reflection(state: RavenState) -> str:
             and str(verification.get("status", "")).upper() == "VERIFICATION_FAILURE")
     )
     if verification_failed_state:
+        failure_type = str(
+            verification_failure.get("error_type", "")
+            if isinstance(verification_failure, dict)
+            else getattr(verification_failure, "error_type", "")
+        )
+        failure_message = str(
+            verification_failure.get("message", "")
+            if isinstance(verification_failure, dict)
+            else getattr(verification_failure, "message", "")
+        ).casefold()
+        if failure_type == "OllamaUnavailableError" or "ollama request failed" in failure_message:
+            logger.info("No retrieval retry: Ollama verification transport failed for this request.")
+            return "continue"
         logger.info("Retry requested: verification failure detected.")
         return "retry"
 
@@ -1480,8 +1926,7 @@ def should_retry_after_reflection(state: RavenState) -> str:
 
 def build_raven_graph():
     """
-    Assembles and compiles the active LangGraph workflow:
-    Input Processing -> Claim Extraction -> Domain Detection -> Evidence Verification -> Reflection -> Persona Analysis -> Supervisor -> XAI -> END
+    Compile the request path with optional enrichment outside verdict generation.
     """
     workflow = StateGraph(RavenState)
 
@@ -1500,21 +1945,13 @@ def build_raven_graph():
     workflow.add_edge("input_processing", "claim_extraction")
     workflow.add_edge("claim_extraction", "domain_detection")
     workflow.add_edge("domain_detection", "evidence_verification")
-    workflow.add_edge("evidence_verification", "reflection")
+    # Retrieval already performs one bounded local-first verification and, if
+    # needed, one external fallback phase. Reflection/persona are optional
+    # enrichment and must not delay the authoritative supervisor decision.
+    workflow.add_edge("evidence_verification", "supervisor")
 
     workflow.add_node("retry_evidence", _instrument_node("retry_evidence", retry_evidence_node))
 
-    workflow.add_conditional_edges(
-        "reflection",
-        should_retry_after_reflection,
-        {
-            "retry": "retry_evidence",
-            "continue": "persona_analysis",
-        },
-    )
-
-    workflow.add_edge("retry_evidence", "evidence_verification")
-    workflow.add_edge("persona_analysis", "supervisor")
     workflow.add_edge("supervisor", "xai")
     workflow.add_edge("xai", END)
 
@@ -1534,7 +1971,11 @@ def get_raven_graph():
     return _COMPILED_GRAPH
 
 
-def run_pipeline(text: Optional[str] = None, image_path: Optional[str] = None) -> RavenState:
+def run_pipeline(
+    text: Optional[str] = None,
+    image_path: Optional[str] = None,
+    *, deadline_at: float | None = None,
+) -> RavenState:
     """
     Convenience executor running the complete active graph from START to END.
     """
@@ -1547,8 +1988,11 @@ def run_pipeline(text: Optional[str] = None, image_path: Optional[str] = None) -
         "attempt_count": 1,
         "maximum_attempts_reached": False,
         "request_started_at": started,
-        "request_deadline_at": started + _config.request_deadline_seconds,
-        "request_diagnostics": {"request_deadline_seconds": _config.request_deadline_seconds},
+        "request_deadline_at": min(
+            deadline_at if deadline_at is not None else float("inf"),
+            started + min(_config.request_deadline_seconds, MAX_REQUEST_BUDGET_SECONDS),
+        ),
+        "request_diagnostics": {"request_deadline_seconds": min(_config.request_deadline_seconds, MAX_REQUEST_BUDGET_SECONDS)},
     }
     with request_deadline(initial_state["request_deadline_at"]):
         final_state = graph.invoke(initial_state)
@@ -1557,7 +2001,31 @@ def run_pipeline(text: Optional[str] = None, image_path: Optional[str] = None) -
     diagnostics["total_duration_seconds"] = finished - started
     diagnostics["deadline_respected"] = finished <= initial_state["request_deadline_at"]
     diagnostics["deadline_reached"] = not diagnostics["deadline_respected"]
+    if diagnostics["deadline_reached"]:
+        message = "The server-side request deadline was reached; processing stopped."
+        final_state["verification_result"] = None
+        final_state["verification_failure"] = VerificationFailure(
+            claim=final_state.get("claim") or text or "",
+            evidence_count=len(final_state.get("fused_evidence") or []),
+            error_type="RequestDeadlineExceeded", message=message,
+        )
+        final_state["supervisor_result"] = {
+            "final_verdict": "Unverified", "confidence_score": 0,
+            "reasoning_summary": message, "key_evidence_used": [],
+        }
+        final_state["final_output"] = {
+            "final_verdict": "Unverified", "confidence": 0,
+            "explanation": message,
+        }
     final_state["request_diagnostics"] = diagnostics
+    logger.info(
+        "performance_diag phase=total elapsed_seconds=%.4f stages=%s",
+        finished - started,
+        {
+            name: round(value.get("duration_seconds", 0.0), 4)
+            for name, value in (diagnostics.get("nodes") or {}).items()
+        },
+    )
     return final_state
 
 

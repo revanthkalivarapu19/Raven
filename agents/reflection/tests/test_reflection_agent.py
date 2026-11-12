@@ -1,3 +1,4 @@
+import os
 import httpx
 import ollama
 import pytest
@@ -5,15 +6,22 @@ from agents.reflection.reflection_agent import ReflectionAgent
 from rag_ingestion.verification.verification_schema import OverallVerification, VerificationResult
 
 
-pytestmark = pytest.mark.integration
 OLLAMA_MODEL = "qwen2.5:3b"
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.getenv("RAVEN_RUN_LIVE_LLM_TESTS") != "1",
+        reason="set RAVEN_RUN_LIVE_LLM_TESTS=1 to run live Ollama reflection checks",
+    ),
+]
 
 
 @pytest.fixture(scope="module", autouse=True)
 def require_ollama_integration():
     try:
         models = ollama.Client(timeout=5).list().models
-    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+    except Exception as exc:
         pytest.skip(f"Ollama integration is unavailable: {exc}")
 
     available_models = {model.model for model in models}
@@ -196,6 +204,7 @@ def test_contradictory_evidence_items():
                 evidence_id=chunk_id, claim=claim, relationship=relationship,
                 confidence=0.9, reasoning="Fixture relationship", verifier="test",
                 same_event=True, claim_aligned=True,
+                directly_establishes_proposition=True,
             )
             for chunk_id, relationship in (("chunk_006", "SUPPORTS"), ("chunk_007", "CONTRADICTS"))
         ],
@@ -229,11 +238,25 @@ def test_claim_contradicted_single_evidence():
             "publication_date": "2026-08-10"
         }
     ]
+    claim = "The Reserve Bank of India uses the policy repo rate."
+    verification = OverallVerification(
+        claim=claim,
+        claim_scope="GENERAL",
+        results=[VerificationResult(
+            evidence_id="chunk_contra", claim=claim,
+            relationship="CONTRADICTS", confidence=0.9,
+            reasoning="The evidence explicitly negates the claim.",
+            verifier="controlled-test", same_event=False,
+            claim_aligned=True, directly_establishes_proposition=True,
+        )],
+        overall_assessment="CONTRADICTED", overall_confidence=0.9,
+    )
     res = run_test(
         "TEST 5 - Claim vs Evidence Contradiction (Single Evidence)",
-        "The Reserve Bank of India uses the policy repo rate.",
+        claim,
         "Finance",
-        evidence_single_contra
+        evidence_single_contra,
+        verification,
     )
     assert res["claim_supported"] is False
     assert res["claim_contradicted"] is True

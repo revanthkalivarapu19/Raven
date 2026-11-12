@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, validator
 
@@ -36,6 +36,14 @@ class VerificationResult(BaseModel):
             "Topical relevance or a related mechanism alone is not sufficient."
         ),
     )
+    direct_evidence_excerpt: Optional[str] = Field(
+        default=None,
+        description="The evidence sentence accepted by the claim–evidence directness gate.",
+    )
+    verifier_relationship: Optional[Literal["SUPPORTS", "CONTRADICTS", "INSUFFICIENT"]] = None
+    constraint_result: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    verifier_failed: bool = False
 
     @validator("confidence")
     def confidence_range(cls, v: float) -> float:

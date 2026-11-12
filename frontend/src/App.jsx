@@ -11,7 +11,7 @@ import { FollowUpTurn } from './components/FollowUpTurn';
 import { WhyResultDialog, AboutDialog } from './components/Dialogs';
 import { Toast } from './components/Toast';
 import { useConversation } from './hooks/useConversation';
-import { verify, followUp, recheckClaim, resetDemoSession } from './services/ravenApi';
+import { routeConversation, resetDemoSession } from './services/ravenApi';
 import { classifyInputIntent } from './services/followUpIntent';
 
 function App() {
@@ -86,46 +86,49 @@ function App() {
     }
   }, [turns.length]);
 
-  // Handle step progression for processing turns calling verify service
+  // Start the real verification request immediately and advance progress while
+  // it runs. The backend response remains the only source of a final verdict.
   useEffect(() => {
     const processingTurn = turns.find((t) => t.status === 'processing');
     if (!processingTurn) return;
 
     let isMounted = true;
-
-    const timer = setTimeout(async () => {
-      if (!isMounted) return;
-
-      if (processingTurn.currentStep < 3) {
-        updateTurn(processingTurn.id, {
-          currentStep: processingTurn.currentStep + 1,
-        });
-      } else {
-        try {
-          const result = await verify({
-            text: processingTurn.text,
-            image: processingTurn.image,
-          });
-          if (!isMounted) return;
-          updateTurn(processingTurn.id, {
-            status: 'done',
-            result,
-          });
-        } catch (err) {
-          if (!isMounted) return;
-          updateTurn(processingTurn.id, {
-            status: 'error',
-            error: err?.message || 'Verification failed',
-          });
-        }
+    let currentStep = processingTurn.currentStep || 0;
+    const timer = setInterval(() => {
+      if (currentStep < 3) {
+        currentStep += 1;
+        updateTurn(processingTurn.id, { currentStep });
       }
-    }, 600);
+    }, 1800);
+
+    routeConversation({
+      intent: 'NEW_VERIFICATION',
+      message: processingTurn.text,
+      image: processingTurn.image,
+    }).then((routed) => {
+      if (!isMounted) return;
+      updateTurn(processingTurn.id, {
+        status: 'done',
+        result: routed.result,
+      });
+    }).catch((err) => {
+      if (!isMounted) return;
+      updateTurn(processingTurn.id, {
+        status: 'error',
+        error: err?.message || 'Verification failed',
+      });
+    });
 
     return () => {
       isMounted = false;
-      clearTimeout(timer);
+      clearInterval(timer);
     };
-  }, [turns, updateTurn]);
+  }, [
+    turns.find((t) => t.status === 'processing')?.id,
+    turns.find((t) => t.status === 'processing')?.text,
+    turns.find((t) => t.status === 'processing')?.image,
+    updateTurn,
+  ]);
 
   const handleAttachScreenshot = (file) => {
     const reader = new FileReader();
@@ -151,33 +154,34 @@ function App() {
 
     // Check if this is a follow-up to an existing conversation
     const lastClaimTurn = [...turns].reverse().find((t) => t.type === 'claim' && t.status === 'done');
-    const intent = classifyInputIntent(textToSend);
+    const intent = screenshot ? 'NEW_VERIFICATION' : classifyInputIntent(textToSend);
 
-    if (lastClaimTurn && !screenshot && intent !== 'NEW_CLAIM') {
+    if (intent !== 'NEW_VERIFICATION') {
       const followUpId = addFollowUp(
         textToSend,
-        intent === 'RECHECK_CLAIM' ? 'Rechecking the original claim against sources…' : 'Consulting the existing result…',
-        lastClaimTurn.id
+        intent === 'MORE_EVIDENCE' ? 'Searching for additional evidence…' : 'Consulting the current conversation…',
+        lastClaimTurn?.id || null
       );
       setComposerText('');
       setScreenshot(null);
 
       try {
-        if (intent === 'RECHECK_CLAIM') {
-          const result = await recheckClaim(lastClaimTurn);
+        const routed = await routeConversation({
+          intent,
+          message: textToSend,
+          sessionState: lastClaimTurn?.result?.session_state || {},
+          currentResult: lastClaimTurn?.result || {},
+        });
+        if (intent === 'MORE_EVIDENCE' && routed.result && lastClaimTurn) {
           updateTurn(followUpId, {
-            answer: 'Recheck complete for the original claim.',
-            result,
+            answer: 'Additional evidence search complete for the current claim.',
+            result: routed.result,
             status: 'done',
           });
+          updateTurn(lastClaimTurn.id, { result: routed.result });
           return;
         }
-        const answerText = await followUp({
-          question: textToSend,
-          result: lastClaimTurn.result,
-          turns,
-        });
-        updateTurn(followUpId, { answer: answerText });
+        updateTurn(followUpId, { answer: routed.answer, status: 'done' });
       } catch {
         updateTurn(followUpId, {
           answer: 'Unable to retrieve follow-up response from sources.',

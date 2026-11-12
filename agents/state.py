@@ -13,6 +13,7 @@ from rag_ingestion.retrieval.evidence_schema import Evidence
 from rag_ingestion.verification.verification_schema import OverallVerification, VerificationFailure
 from rag_ingestion.verification.claim_scope import ClaimScope
 from rag_ingestion.personas.persona_schema import PersonaInsight
+from agents.claim_decomposition import AtomicClaim
 
 
 class TextSegment(TypedDict, total=False):
@@ -68,6 +69,9 @@ class RavenState(TypedDict, total=False):
 
     # Downstream Agent Outputs
     claim: str                       # Output of Claim Extraction
+    atomic_claims: List[AtomicClaim] # Independently verifiable factual propositions
+    claim_results: List[Dict[str, Any]] # Evidence/verification isolated by claim id
+    retrieval_diagnostics: Dict[str, Any] # Safe structured retrieval diagnostics
     claim_scope: ClaimScope          # Scope used for verification eligibility
     temporal_context: Dict[str, Any] # Explicit claim/evidence timeframe context
     domain: Dict[str, Any]           # Output of Domain Detection: {"domain", "confidence", "reason"}
@@ -76,6 +80,8 @@ class RavenState(TypedDict, total=False):
     local_evidence: List[Evidence]
     external_evidence: List[Evidence]
     fused_evidence: List[Evidence]
+    provider_statuses: Dict[str, str]
+    external_provider_state: str
 
     # Verification
     verification_result: Optional[OverallVerification]

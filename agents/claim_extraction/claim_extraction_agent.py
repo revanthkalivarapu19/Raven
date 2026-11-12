@@ -1,8 +1,11 @@
+import logging
 import re
+import time
 from collections import Counter
 from decimal import Decimal, InvalidOperation
 
 from .services.llm_service import LLMService
+from rag_ingestion.llm_resilience import LLMInvocationError, remaining_request_budget, request_deadline
 
 
 _NUMBER_RE = re.compile(
@@ -63,6 +66,8 @@ _ENTITY_RE = re.compile(
 )
 _ACRONYM_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,}\b")
 _ENTITY_LEADING_STOPWORDS = {"a", "an", "the"}
+CLAIM_EXTRACTION_BUDGET_SECONDS = 25.0
+logger = logging.getLogger(__name__)
 _ENTITY_STOPWORDS = {
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
     "sunday", "january", "february", "march", "april", "may", "june",
@@ -213,17 +218,70 @@ class ClaimExtractionFidelityError(ValueError):
     """Raised when generated claims cannot pass factual-fidelity validation."""
 
 
+def _concise_source_fallback(source):
+    """Choose a short source sentence that captures the most repeated content."""
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", source.strip())
+        if sentence.strip()
+    ]
+    if not sentences:
+        return ""
+    stopwords = {
+        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
+        "in", "is", "it", "of", "on", "or", "the", "to", "was", "were",
+        "with",
+    }
+    words_by_sentence = [
+        {word.lower() for word in re.findall(r"\b[\w.%-]+\b", sentence)
+         if word.lower() not in stopwords}
+        for sentence in sentences
+    ]
+    frequencies = Counter(word for words in words_by_sentence for word in words)
+    ranked = sorted(
+        enumerate(sentences),
+        key=lambda item: (
+            len(_named_entities(item[1])),
+            sum(frequencies[word] - 1 for word in words_by_sentence[item[0]]),
+            -item[0],
+        ),
+        reverse=True,
+    )
+    for _, sentence in ranked:
+        if len(sentence.split()) <= 30 and not validate_claim_fidelity(source, sentence):
+            return sentence
+    return ""
+
+
 class ClaimExtractionAgent:
 
     def __init__(self):
         self.llm = LLMService()
 
     def extract_claim(self, text):
-
+        total_started = time.monotonic()
         if not text or not text.strip():
             return ""
 
-        text = text.strip()
+        source = text.strip()
+        concise_structured = (
+            len(source.split()) <= 30
+            and len(re.findall(r"[.!?]", source)) <= 1
+            and not re.search(
+                r"\b(?:and|but|while|whereas|including|respectively)\b|[;:]",
+                source, re.IGNORECASE,
+            )
+            and not re.match(r"^(?:who|what|when|where|why|how|is it true)\b", source, re.I)
+        )
+        if concise_structured:
+            logger.info(
+                "claim_extraction complete duration_ms=%.1f model_calls=0 fallback=source_passthrough",
+                (time.monotonic() - total_started) * 1000,
+            )
+            return source
+
+        preprocessing_started = time.monotonic()
+        text = source
 
         prompt = f"""
 Extract the main factual claim from the following text.
@@ -252,11 +310,55 @@ TEXT:
 Return only one concise factual claim.
 """
 
-        claim = self.llm.generate(prompt)
-        claim = self.clean_claim(claim)
-        violations = validate_claim_fidelity(text, claim)
-        if violations:
-            correction_prompt = f"""Correct the generated claim using ONLY the original input.
+        preprocessing_ms = (time.monotonic() - preprocessing_started) * 1000
+        remaining = remaining_request_budget()
+        extraction_deadline = total_started + CLAIM_EXTRACTION_BUDGET_SECONDS
+        if remaining is not None:
+            extraction_deadline = min(extraction_deadline, time.monotonic() + remaining)
+        model_calls = 0
+        repairs = 0
+        repair_duration_ms = 0.0
+        fallback_used = False
+
+        def deterministic_fallback(reason):
+            nonlocal fallback_used
+            fallback_used = True
+            fallback_started = time.monotonic()
+            candidate = self.clean_claim(_concise_source_fallback(text))
+            if candidate and len(candidate.split()) <= 30 and not validate_claim_fidelity(text, candidate):
+                logger.info(
+                    "claim_extraction deterministic_fallback reason=%s duration_ms=%.1f",
+                    reason, (time.monotonic() - fallback_started) * 1000,
+                )
+                return candidate
+            logger.warning(
+                "claim_extraction deterministic_fallback_unavailable reason=%s duration_ms=%.1f",
+                reason, (time.monotonic() - fallback_started) * 1000,
+            )
+            raise ClaimExtractionFidelityError(
+                "Claim extraction failed and no concise source-grounded fallback was available."
+            )
+
+        try:
+            with request_deadline(extraction_deadline):
+                logger.info("claim_extraction preprocessing duration_ms=%.1f", preprocessing_ms)
+                generation_started = time.monotonic()
+                try:
+                    model_calls += 1
+                    claim = self.clean_claim(self.llm.generate(prompt))
+                except Exception as exc:
+                    reason = "timeout" if isinstance(exc, LLMInvocationError) and exc.kind == "timeout" else "model_failure"
+                    return deterministic_fallback(reason)
+                logger.info(
+                    "claim_extraction generation duration_ms=%.1f model_calls=%d",
+                    (time.monotonic() - generation_started) * 1000, model_calls,
+                )
+
+                if len(claim.split()) > 30:
+                    claim = deterministic_fallback("output_exceeded_concise_limit")
+                violations = validate_claim_fidelity(text, claim)
+                if violations:
+                    correction_prompt = f"""Correct the generated claim using ONLY the original input.
 The generated claim failed deterministic factual-fidelity validation.
 Detected fidelity violations: {", ".join(violations)}
 Do not invent or alter any number, percentage, date, year, quantity, named
@@ -271,20 +373,31 @@ ORIGINAL INPUT:
 INVALID GENERATED CLAIM:
 {claim}
 """
-            claim = self.clean_claim(self.llm.generate(correction_prompt))
-            violations = validate_claim_fidelity(text, claim)
-            if violations:
-                # A standalone input is already a safe, fully grounded claim.
-                # Prefer its exact text over raising on a model rewrite that
-                # cannot pass validation after the one permitted correction.
-                if not validate_claim_fidelity(text, text):
-                    return self.clean_claim(text)
-                raise ClaimExtractionFidelityError(
-                    "Claim extraction failed factual-fidelity validation after "
-                    "one correction attempt: " + "; ".join(violations)
-                )
+                    repair_started = time.monotonic()
+                    try:
+                        repairs += 1
+                        model_calls += 1
+                        claim = self.clean_claim(self.llm.generate(correction_prompt))
+                    except Exception:
+                        repair_duration_ms = (time.monotonic() - repair_started) * 1000
+                        return deterministic_fallback("fidelity_repair_failed")
+                    repair_duration_ms = (time.monotonic() - repair_started) * 1000
+                    violations = validate_claim_fidelity(text, claim)
+                    if violations:
+                        return deterministic_fallback("fidelity_repair_invalid")
 
-        return claim
+                return claim
+        finally:
+            logger.info(
+                "claim_extraction complete duration_ms=%.1f preprocessing_ms=%.1f "
+                "repair_ms=%.1f repairs=%d model_calls=%d retries=0 fallback=%s",
+                (time.monotonic() - total_started) * 1000,
+                preprocessing_ms,
+                repair_duration_ms,
+                repairs,
+                model_calls,
+                fallback_used,
+            )
 
     def clean_claim(self, claim):
 

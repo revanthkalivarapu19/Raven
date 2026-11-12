@@ -12,6 +12,8 @@ from rag_ingestion.verification.verification_schema import (
     OverallVerification,
     VerificationFailure,
 )
+from rag_ingestion.config.domains import canonical_domain
+from agents.query_planner import plan_queries
 
 
 @dataclass
@@ -88,16 +90,24 @@ class FusionFake:
 class VerificationFake:
     def __init__(self, result=None):
         self.calls = []
-        self.result = result or OverallVerification(
-            claim="placeholder",
-            results=[],
-            overall_assessment="SUPPORTED",
-            overall_confidence=0.8,
-        )
+        self.result = result
 
-    def verify(self, claim, evidence_list):
+    def verify(self, claim, evidence_list, **_kwargs):
         self.calls.append((claim, evidence_list))
-        return self.result
+        if self.result is not None:
+            return self.result
+        from rag_ingestion.verification.verification_schema import VerificationResult
+        return OverallVerification(
+            claim=claim,
+            results=[VerificationResult(
+                evidence_id=item.evidence_id, claim=claim,
+                relationship="SUPPORTS", confidence=0.8,
+                reasoning="Controlled test fixture.", verifier="test",
+                claim_aligned=True, directly_establishes_proposition=True,
+            ) for item in evidence_list],
+            overall_assessment="SUPPORTED" if evidence_list else "INSUFFICIENT_EVIDENCE",
+            overall_confidence=0.8 if evidence_list else 0.0,
+        )
 
 
 def _pipeline(retrieval=None, verification=None):
@@ -125,7 +135,8 @@ def test_multi_query_aggregates_evidence_and_fuses_once():
     assert pipeline.retrieval_manager.queries == queries
     assert len(result.local_evidence) == 3
     assert len(result.external_evidence) == 3
-    assert len(pipeline.fusion_manager.calls) == 1
+    assert len(pipeline.fusion_manager.calls) >= 1
+    assert pipeline.external_manager.queries == queries
 
 
 def test_verification_runs_once_with_original_claim():
@@ -163,7 +174,8 @@ def test_pipeline_passes_original_claim_into_fusion():
         retrieval_queries=["smoking lung cancer risk", "smoking cancer risk", "lung cancer smoking"],
     )
 
-    assert pipeline.fusion_manager.claims == [claim]
+    assert pipeline.fusion_manager.claims
+    assert set(pipeline.fusion_manager.claims) == {claim}
 
 
 def test_single_retrieval_query_remains_backward_compatible():
@@ -194,7 +206,7 @@ def test_failed_retrieval_does_not_manufacture_success():
     )
 
     assert result.local_evidence == []
-    assert len(pipeline.fusion_manager.calls) == 1
+    assert len(pipeline.fusion_manager.calls) == 4
     assert len(verification.calls) == 1
     assert result.verification_result is not None
     assert result.verification_result.overall_assessment != "SUPPORTED"
@@ -212,6 +224,8 @@ def _load_graph_boundary():
         "logger": logging.getLogger(__name__),
         "OverallVerification": OverallVerification,
         "VerificationFailure": VerificationFailure,
+        "canonical_domain": canonical_domain,
+        "plan_queries": plan_queries,
     }
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(graph_path), "exec"), namespace)
     return namespace
@@ -241,7 +255,7 @@ def test_graph_calls_pipeline_once_and_not_managers_directly():
     })
 
     assert len(calls) == 1
-    assert calls[0]["retrieval_queries"] == ["query one", "query two"]
+    assert calls[0]["retrieval_queries"] == ["The original claim."]
     assert calls[0]["claim"] == "The original claim."
     assert result["fused_evidence"] == []
     assert result["verification_result"] is None

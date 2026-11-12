@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import requests
 
 from .base_source import BaseExternalSource
+from .proxy_policy import provider_proxy_overrides
 from .source_schema import ExternalEvidence
 
 logger = logging.getLogger(__name__)
@@ -26,10 +28,11 @@ class NewsAPISource(BaseExternalSource):
         {"medical", "political", "science", "finance", "general"}
     )
 
-    def __init__(self, timeout: int = 15) -> None:
+    def __init__(self, timeout: int = 4) -> None:
         self.name = "news_api"
-        self.timeout = timeout
+        self.timeout = min(float(timeout), 4.0)
         self.base_url = "https://newsapi.org/v2/everything"
+        self.last_http_status = None
 
     def search(
         self,
@@ -55,8 +58,25 @@ class NewsAPISource(BaseExternalSource):
             "sortBy": "relevancy",
         }
 
-        if language and language.strip():
-            params["language"] = language.strip()
+        params["language"] = language.strip() if language and language.strip() else "en"
+        # Apply a bounded date range only when the grounded query itself names
+        # a month and year. The original atomic claim remains the source of the
+        # date; no date is inferred or added here.
+        month_match = re.search(
+            r"\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(20\d{2})\b",
+            query, flags=re.IGNORECASE,
+        )
+        if month_match:
+            try:
+                month_start = datetime.strptime(
+                    f"{month_match.group(1)} {month_match.group(2)}", "%B %Y"
+                ).date()
+                today = datetime.now(timezone.utc).date()
+                if month_start <= today:
+                    params["from"] = month_start.isoformat()
+                    params["to"] = today.isoformat()
+            except ValueError:
+                pass
 
         headers = {
             "X-Api-Key": api_key,
@@ -69,7 +89,9 @@ class NewsAPISource(BaseExternalSource):
                 params=params,
                 headers=headers,
                 timeout=self.request_timeout(),
+                proxies=provider_proxy_overrides(self.base_url),
             )
+            self.last_http_status = response.status_code
             response.raise_for_status()
             data = response.json()
 

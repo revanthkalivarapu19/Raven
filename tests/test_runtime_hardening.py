@@ -15,56 +15,59 @@ def _evidence(eid="e1"):
 
 
 def _verifier_response(monkeypatch, payload):
+    if set(payload) == {"relationship"}:
+        relationship = {"SUPPORTS": "SUPPORTED", "CONTRADICTS": "CONTRADICTED"}.get(
+            payload["relationship"], payload["relationship"],
+        )
+        output = {"results": [{"evidence_id": "e1", "relationship": relationship}]}
+    else:
+        output = payload
     monkeypatch.setattr(ollama_verifier._LLM_RESILIENCE, "generate",
-                        lambda _call: {"response": json.dumps(payload)})
+                        lambda _call: {"response": json.dumps(output)})
 
 
 def _valid_verifier():
-    return {"relationship": "SUPPORTS", "confidence": 0.9,
-            "same_event": True, "claim_aligned": True,
-            "directly_establishes_proposition": True, "reasoning": "supported"}
+    return {"relationship": "SUPPORTS"}
 
 
 def test_verifier_complete_and_reasoning_optional(monkeypatch):
     _verifier_response(monkeypatch, _valid_verifier())
-    assert ollama_verifier.verify_evidence("claim", _evidence()).reasoning == "supported"
-    payload = _valid_verifier()
-    del payload["reasoning"]
+    result = ollama_verifier.verify_evidence(
+        "The drug reduces blood pressure.",
+        _evidence().model_copy(update={"text": "The drug reduces blood pressure."}),
+    )
+    assert result.relationship == "SUPPORTS"
+    assert result.reasoning.startswith("Minimal item relationship; confidence is deterministic.")
+    assert result.confidence == 0.9
+
+
+@pytest.mark.parametrize("payload", [{}, {"relationship": "SUPPORTED", "confidence": 0.9}])
+def test_verifier_requires_only_the_relationship_field(monkeypatch, payload):
     _verifier_response(monkeypatch, payload)
     result = ollama_verifier.verify_evidence("claim", _evidence())
-    assert result.reasoning == "No reasoning text was returned by the verifier model."
+    assert result.relationship == "INSUFFICIENT"
+    assert result.verifier_failed
 
 
-@pytest.mark.parametrize("field", ["relationship", "confidence", "directly_establishes_proposition"])
-def test_verifier_decision_fields_remain_required(monkeypatch, field):
-    payload = _valid_verifier()
-    del payload[field]
-    _verifier_response(monkeypatch, payload)
-    with pytest.raises(ValueError, match="missing required"):
-        ollama_verifier.verify_evidence("claim", _evidence())
-
-
-@pytest.mark.parametrize(("field", "value"), [
-    ("confidence", "high"), ("same_event", "true"),
-    ("claim_aligned", 1), ("directly_establishes_proposition", None),
-    ("relationship", 1),
+@pytest.mark.parametrize("payload", [
+    {"relationship": "supported"}, {"relationship": 1},
+    {"relationship": "SUPPORTED", "confidence": 0.99},
 ])
-def test_verifier_invalid_field_types_fail_closed(monkeypatch, field, value):
-    payload = _valid_verifier()
-    payload[field] = value
+def test_verifier_invalid_output_fails_closed(monkeypatch, payload):
     _verifier_response(monkeypatch, payload)
-    with pytest.raises(ValueError):
-        ollama_verifier.verify_evidence("claim", _evidence())
+    result = ollama_verifier.verify_evidence("claim", _evidence())
+    assert result.relationship == "INSUFFICIENT"
+    assert result.verifier_failed
 
 
 def test_verification_failure_reflection_is_deterministic_and_retryable(monkeypatch):
     monkeypatch.setattr(graph, "get_reflection_agent", lambda: pytest.fail("LLM reflection called"))
     state = {"verification_failure": SimpleNamespace(message="verifier timed out"),
-             "attempt_count": 2, "errors": [], "claim": "claim",
+             "attempt_count": 1, "errors": [], "claim": "claim",
              "domain": {"domain": "General"}}
     result = graph.reflection_node(state)
     assert result["reflection_result"]["retry_requested"] is True
-    assert result["reflection_result"]["attempt_number"] == 2
+    assert result["reflection_result"]["attempt_number"] == 1
     assert graph.should_retry_after_reflection({**state, **result}) == "retry"
 
 

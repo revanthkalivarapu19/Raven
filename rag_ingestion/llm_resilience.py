@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import threading
 import contextvars
 from contextlib import contextmanager
 import time
@@ -12,6 +11,7 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 _REQUEST_DEADLINE = contextvars.ContextVar("raven_request_deadline", default=None)
+VERIFICATION_BUDGET_RESERVE_SECONDS = 26.0
 
 
 @contextmanager
@@ -38,10 +38,9 @@ class LLMInvocationError(RuntimeError):
 class LLMResilience:
     """Per-client health state; failures do not poison unrelated clients."""
 
-    def __init__(self, timeout_seconds: float = 120.0):
+    def __init__(self, timeout_seconds: float = 35.0):
         self.timeout_seconds = timeout_seconds
         self._deterministic_failure = False
-        self._lock = threading.Lock()
 
     def chat(self, call: Callable[[], Any]) -> Any:
         return self._invoke(call, self._validate_chat)
@@ -51,37 +50,24 @@ class LLMResilience:
         return self._invoke(call, self._validate_generate)
 
     def _invoke(self, call: Callable[[], Any], validator: Callable[[Any], Any]) -> Any:
-        with self._lock:
-            if self._deterministic_failure:
-                raise LLMInvocationError(
-                    "Ollama model runtime is unavailable after a deterministic initialization failure",
-                    "deterministic_runtime",
-                )
+        if self._deterministic_failure:
+            raise LLMInvocationError(
+                "Ollama model runtime is unavailable after a deterministic initialization failure",
+                "deterministic_runtime",
+            )
         try:
+            started = time.monotonic()
             remaining = self.timeout_seconds
             deadline = _REQUEST_DEADLINE.get()
             if deadline is not None:
                 remaining = min(remaining, max(0.001, deadline - time.monotonic()))
-            result: dict[str, Any] = {}
-            completed = threading.Event()
-
-            def invoke() -> None:
-                try:
-                    result["response"] = call()
-                except BaseException as exc:  # propagate through the bounded caller
-                    result["error"] = exc
-                finally:
-                    completed.set()
-
-            # A daemon worker ensures an uncooperative HTTP client cannot keep the
-            # process alive after the request deadline has safely returned.
-            worker = threading.Thread(target=invoke, name="raven-llm-call", daemon=True)
-            worker.start()
-            if not completed.wait(timeout=remaining):
+            # Run synchronously: network clients receive their own request
+            # timeout from the call site. Never leave an orphaned worker behind.
+            if remaining <= 0:
                 raise LLMInvocationError("Ollama request timed out", "timeout", retryable=True)
-            if "error" in result:
-                raise result["error"]
-            response = result["response"]
+            response = call()
+            if time.monotonic() - started >= remaining:
+                raise LLMInvocationError("Ollama request timed out", "timeout", retryable=True)
         except LLMInvocationError:
             raise
         except TimeoutError as exc:
@@ -97,8 +83,11 @@ class LLMResilience:
             ))
             kind = "deterministic_runtime" if deterministic else "server_unavailable" if unavailable else "transport"
             if deterministic:
-                with self._lock:
-                    self._deterministic_failure = True
+                self._deterministic_failure = True
+            logger.error(
+                "Ollama transport diagnostic kind=%s exception_type=%s exception=%r",
+                kind, type(exc).__name__, exc, exc_info=True,
+            )
             raise LLMInvocationError(
                 f"Ollama {kind} failure: {type(exc).__name__}", kind,
                 retryable=not deterministic,
@@ -142,5 +131,4 @@ class LLMResilience:
         return data
 
     def reset(self) -> None:
-        with self._lock:
-            self._deterministic_failure = False
+        self._deterministic_failure = False

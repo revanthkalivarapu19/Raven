@@ -8,7 +8,7 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     define: {
       'window.__RAVEN_USE_REAL_BACKEND__': JSON.stringify(
-        env.VITE_RAVEN_USE_REAL_BACKEND === 'true',
+        env.VITE_RAVEN_USE_REAL_BACKEND !== 'false',
       ),
     },
     server: {

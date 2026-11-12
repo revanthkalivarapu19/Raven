@@ -38,6 +38,112 @@ def test_authority_alone_does_not_beat_direct_relevance():
     assert result[0].evidence_id == "relevant"
 
 
+def test_semantic_ranking_batches_candidates_and_uses_claim_relevant_excerpts():
+    import numpy as np
+
+    class Model:
+        def __init__(self):
+            self.encode_calls = []
+
+        def encode(self, texts, **_kwargs):
+            self.encode_calls.append(list(texts))
+            return np.tile(np.array([[1.0, 0.0]], dtype=np.float32), (len(texts), 1))
+
+        def __call__(self, texts, **_kwargs):
+            return {"input_ids": [[1] * len(text.split()) for text in texts]}
+
+    model = Model()
+    embedder = type("Embedder", (), {"_model": model})()
+    manager = EvidenceFusionManager()
+    manager.semantic_embedder = embedder
+    claim = "smoking increases lung cancer risk"
+    first = _ev(
+        "direct", "An unrelated opening sentence. Smoking increases lung cancer risk.",
+    ).model_copy(update={"title": "Smoking and lung cancer"})
+    second = _ev("related", "Smoking can cause lung cancer.")
+
+    scores = manager._semantic_scores(claim, [first, second])
+
+    assert scores == {"direct": 1.0, "related": 1.0}
+    assert [len(call) for call in model.encode_calls] == [1, 2]
+    passage_batch = model.encode_calls[1]
+    assert "Smoking increases lung cancer risk" in passage_batch[0]
+    assert len(passage_batch[0]) <= 256
+
+    manager._semantic_scores(claim, [first, second])
+    assert [len(call) for call in model.encode_calls] == [1, 2]
+
+
+def test_final_fusion_bounds_bge_to_shortlisted_candidate_set():
+    import numpy as np
+
+    class Model:
+        def __init__(self):
+            self.encode_calls = []
+
+        def encode(self, texts, **_kwargs):
+            self.encode_calls.append(list(texts))
+            return np.tile(np.array([[1.0, 0.0]], dtype=np.float32), (len(texts), 1))
+
+        def __call__(self, texts, **_kwargs):
+            return {"input_ids": [[1] * len(text.split()) for text in texts]}
+
+    model = Model()
+    manager = EvidenceFusionManager()
+    manager.semantic_embedder = type("Embedder", (), {"_model": model})()
+    claim = "Earth orbits the Sun."
+    candidates = [
+        _ev(f"candidate-{index}", f"Earth orbits the Sun. Source marker {index}.")
+        for index in range(12)
+    ]
+
+    manager.fuse(candidates, [], 3, claim=claim, semantic_ranking=True)
+
+    assert [len(call) for call in model.encode_calls] == [1, 5]
+
+
+def test_same_sentence_claim_alignment_prefers_direct_over_topical_passage():
+    import numpy as np
+
+    class Model:
+        def encode(self, texts, **_kwargs):
+            return np.tile(np.array([[1.0, 0.0]], dtype=np.float32), (len(texts), 1))
+
+        def __call__(self, texts, **_kwargs):
+            return {"input_ids": [[1] * len(text.split()) for text in texts]}
+
+    claim = "Smoking increases the risk of lung cancer."
+    topical = _ev("topical", "This cancer page discusses smoking, lung cancer, and health risks.")
+    direct = _ev("direct", "Tobacco smoking increases risk of lung cancer.")
+    manager = EvidenceFusionManager()
+    manager.semantic_embedder = type("Embedder", (), {"_model": Model()})()
+
+    result = manager.fuse([topical, direct], [], 2, claim=claim, semantic_ranking=True)
+
+    assert result[0].evidence_id == "direct"
+
+
+def test_broad_page_terms_do_not_accumulate_across_sentences_for_ranking():
+    import numpy as np
+
+    class Model:
+        def encode(self, texts, **_kwargs):
+            return np.tile(np.array([[1.0, 0.0]], dtype=np.float32), (len(texts), 1))
+
+        def __call__(self, texts, **_kwargs):
+            return {"input_ids": [[1] * len(text.split()) for text in texts]}
+
+    claim = "The Falcon transports cargo to the station each month."
+    direct = _ev("direct", "The Falcon transports cargo to the station each month.")
+    topical = _ev("topical", "The Falcon is a vehicle. The station has a cargo bay. A month has many days.")
+    manager = EvidenceFusionManager()
+    manager.semantic_embedder = type("Embedder", (), {"_model": Model()})()
+
+    ranked = manager.fuse([topical, direct], [], 2, claim=claim, semantic_ranking=True)
+
+    assert ranked[0].evidence_id == "direct"
+
+
 def test_ids_are_preserved_and_unrelated_evidence_is_filtered():
     claim = "A specific event occurred."
     first = _ev("first", "A specific event occurred.", similarity=0.9)
@@ -146,3 +252,87 @@ def test_low_relevance_evidence_becomes_insufficient_not_supported():
 
     assert fused == []
     assert verification.overall_assessment == "INSUFFICIENT_EVIDENCE"
+
+
+def test_genuine_nasa_earth_sun_figure_description_survives_fusion():
+    # This is source-authored image alt text from the existing NASA IMAP page's
+    # Lagrange-points graphic, with its real URL and document title preserved.
+    text = (
+        "A graphic shows the Sun at the center with Earth's orbit drawn as a blue circle around it. "
+        "Earth appears along the orbit to the right of the Sun, at the 3 o'clock position on the circle. "
+        "L1 is marked as a white dot to the left of Earth along a horizontal dashed line that extends "
+        "from the left side of the circle through the Sun and beyond Earth and the right side of the circle. "
+        "L2 is marked as a white dot to the right of Earth at the right end of the dashed line. "
+        "L3 is marked with a white dot on the left side of the circle, to the left of the Sun, at the left "
+        "end of the dashed line. L4 is marked with a white dot near the top of the circle, at about the "
+        "1 o'clock position. L5 is marked with a white dot along the lower right part of the circle, near "
+        "the 5 o'clock position."
+    )
+    genuine = Evidence(
+        evidence_id="nasa-imap-lagrange-figure",
+        chunk_id="nasa-imap-lagrange-figure",
+        document_id="nasa-imap",
+        text=text,
+        title="Interstellar Mapping and Acceleration Probe (IMAP)",
+        domain="science",
+        source="NASA",
+        language="en",
+        url="https://science.nasa.gov/mission/imap/",
+        metadata={"content_quality": "source_text", "extraction": "source-authored image alt text"},
+        similarity_score=0.62,
+        authority_score=1.0,
+    )
+
+    result = EvidenceFusionManager().fuse(
+        [genuine], [], 3, claim="The Earth orbits the Sun.", domain="science"
+    )
+
+    assert [item.evidence_id for item in result] == ["nasa-imap-lagrange-figure"]
+
+
+def test_genuine_nasa_earth_orbit_period_statement_survives_fusion():
+    evidence = Evidence(
+        evidence_id="nasa-space-place-earth-orbit-period",
+        chunk_id="nasa-space-place-earth-orbit-period",
+        document_id="nasa-space-place-leap-year",
+        text="It takes approximately 365.25 days for Earth to orbit the Sun — a solar year.",
+        title="What Is a Leap Year?",
+        domain="science",
+        source="NASA Space Place",
+        language="en",
+        url="https://spaceplace.nasa.gov/leap-year/en/",
+        metadata={"content_quality": "source_text"},
+        similarity_score=0.74,
+        authority_score=1.0,
+    )
+
+    result = EvidenceFusionManager().fuse(
+        [evidence], [], 3,
+        claim="The Earth orbits the Sun once every year.",
+        domain="science",
+    )
+
+    assert [item.evidence_id for item in result] == ["nasa-space-place-earth-orbit-period"]
+
+
+def test_earth_sized_exoplanet_orbit_does_not_match_earth_sun_claim():
+    unrelated = Evidence(
+        evidence_id="nasa-exoplanet", chunk_id="nasa-exoplanet",
+        document_id="nasa-exoplanets",
+        text=("This artist's concept features seven Earth-sized planets orbiting "
+              "the star TRAPPIST-1, a Sun-like system about 40 light-years away."),
+        title="Other Stars, Other Worlds", domain="science", source="NASA",
+        language="en", url="https://science.nasa.gov/exoplanets/",
+        metadata={"content_quality": "source_text"}, similarity_score=0.62,
+        authority_score=1.0,
+    )
+
+    result = EvidenceFusionManager().fuse(
+        [unrelated], [], 3,
+        claim="The Earth is the center of the solar system and the Sun orbits Earth.",
+        domain="science",
+    )
+
+    # Broad retrieval may include topical material; semantic verification
+    # decides whether this passage establishes the actual orbital claim.
+    assert all(item.evidence_id == "nasa-exoplanet" for item in result)

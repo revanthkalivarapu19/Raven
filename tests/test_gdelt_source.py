@@ -46,6 +46,34 @@ def test_valid_json_is_converted_to_evidence(monkeypatch):
     assert result[0].title == "A"
 
 
+def test_gdelt_query_removes_one_character_article_but_preserves_claim_entities(monkeypatch):
+    source = _source([Response(data={"articles": []})], monkeypatch)
+
+    assert source.search(
+        "Israeli President Isaac Herzog tasked opposition politician Gadi "
+        "Eisenkot with forming a government for Benjamin Netanyahu."
+    ) == []
+
+    query = source.session.calls[0][1]["params"]["query"]
+    assert "Herzog" in query
+    assert "Gadi Eisenkot" in query
+    assert "forming government" in query
+    assert "Benjamin Netanyahu" in query
+    assert not any(term.casefold() == "a" for term in query.split())
+    assert '"Israeli President Isaac Herzog tasked opposition politician Gadi Eisenkot' in query
+    assert " OR " in query
+
+
+def test_default_gdelt_stops_after_first_rate_limit(monkeypatch):
+    source = GDELTSource()
+    source.session = Session([Response(429), Response(data={"articles": []})])
+
+    with pytest.raises(RuntimeError, match="429"):
+        source.search("Delhi AQI 400 Diwali")
+
+    assert len(source.session.calls) == 1
+
+
 def test_429_exhaustion_isolated_as_error(monkeypatch):
     source = _source([Response(429), Response(429), Response(429)], monkeypatch)
     with pytest.raises(RuntimeError, match="429"):

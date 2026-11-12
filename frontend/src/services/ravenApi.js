@@ -306,6 +306,59 @@ export function recheckClaim(claimTurn) {
   return verify(recheckInputForTurn(claimTurn));
 }
 
+/** Route a conversation turn without invoking verification for non-claim intents. */
+export async function routeConversation({
+  intent = 'NEW_VERIFICATION', message = '', image = null,
+  sessionState = {}, currentResult = {},
+} = {}) {
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  if (typeof window !== 'undefined' && window.__RAVEN_USE_REAL_BACKEND__) {
+    let response;
+    try {
+      response = await fetch('/api/conversation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          intent, message, image,
+          session_state: sessionState,
+          current_result: currentResult,
+        }),
+      });
+    } catch {
+      throw new Error(BACKEND_ERROR);
+    }
+    if (!response.ok) throw new Error(await backendError(response));
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error(BACKEND_ERROR);
+    }
+    if (intent === 'NEW_VERIFICATION' || intent === 'MORE_EVIDENCE') {
+      if (!isValidVerifyResponse(data)) throw new Error(BACKEND_ERROR);
+      return { result: data, answer: '' };
+    }
+    if (data && typeof data.answer === 'string') return { result: null, answer: data.answer };
+    throw new Error(BACKEND_ERROR);
+  }
+
+  if (intent === 'NEW_VERIFICATION') {
+    return { result: await verify({ text: message, image }), answer: '' };
+  }
+  if (intent === 'MORE_EVIDENCE') {
+    const claim = sessionState.current_claim || '';
+    return { result: await verify({ text: claim }), answer: '' };
+  }
+  if (intent === 'EXPLAIN_RESULT' || intent === 'ASK_ABOUT_SOURCE') {
+    return { result: null, answer: await followUp({ question: message, result: currentResult }) };
+  }
+  return {
+    result: null,
+    answer: 'I can explain a Raven result, show its sources, look for more evidence, or verify a new factual claim.',
+  };
+}
+
 /**
  * Answer a follow-up question related to a previous result.
  * // TODO(backend): Connect real backend pipeline via POST /api/followup

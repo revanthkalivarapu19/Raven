@@ -3,6 +3,10 @@ import re
 from typing import Any, Dict, List, Optional, Union
 import ollama
 from rag_ingestion.llm_resilience import LLMResilience
+from rag_ingestion.verification.claim_scope import (
+    classify_claim_scope,
+    verification_can_establish_claim,
+)
 
 _LLM_RESILIENCE = LLMResilience()
 
@@ -399,6 +403,12 @@ Return ONLY a valid JSON object with EXACTLY this structure:
                 items = verification_result.get("results")
             items = items or []
 
+            claim_scope = (
+                verification_result.get("claim_scope")
+                if isinstance(verification_result, dict)
+                else getattr(verification_result, "claim_scope", None)
+            ) or classify_claim_scope(str(claim_text))
+
             def _field(item: Any, name: str, default: Any = None) -> Any:
                 return item.get(name, default) if isinstance(item, dict) else getattr(item, name, default)
 
@@ -408,27 +418,23 @@ Return ONLY a valid JSON object with EXACTLY this structure:
             }
             relevant_items = [
                 item for item in items
-                if _field(item, "claim_aligned", False) is True
-                and _field(item, "evidence_id") in available_ids
+                if _field(item, "evidence_id") in available_ids
+                and verification_can_establish_claim(item, claim_scope)
+                and _field(item, "confidence", 0.0) >= HIGH_CONFIDENCE_THRESHOLD
             ]
             supports_items = [item for item in relevant_items if _field(item, "relationship") == "SUPPORTS"]
             contradicts_items = [item for item in relevant_items if _field(item, "relationship") == "CONTRADICTS"]
-            structured_conflict = assessment != "INSUFFICIENT_EVIDENCE" and any(
+            structured_conflict = any(
                 _field(support, "evidence_id") != _field(contradiction, "evidence_id")
                 and _field(support, "same_event") is _field(contradiction, "same_event")
                 for support in supports_items for contradiction in contradicts_items
             )
 
-            supported = any(
-                _field(item, "relationship") == "SUPPORTS"
-                and _field(item, "claim_aligned", False) is True for item in items
-            )
-            contradicted = any(
-                _field(item, "relationship") == "CONTRADICTS"
-                and _field(item, "claim_aligned", False) is True for item in items
-            )
+            has_both_relationships = bool(supports_items and contradicts_items)
+            supported = bool(supports_items) and not structured_conflict and not has_both_relationships
+            contradicted = bool(contradicts_items) and not structured_conflict and not has_both_relationships
             result["claim_supported"] = supported
-            result["claim_contradicted"] = contradicted and not supported
+            result["claim_contradicted"] = contradicted
             result["support_score"] = result["support_score"] if supported else 0.0
             result["is_evidence_sufficient"] = supported or contradicted
             structured_ids = {_field(item, "evidence_id") for item in items}
@@ -438,12 +444,44 @@ Return ONLY a valid JSON object with EXACTLY this structure:
             if structured_conflict:
                 result["evidence_items_contradict_each_other"] = True
                 result["contradictions_found"] = True
+            if structured_conflict or has_both_relationships:
                 result["decision"] = "NO"
                 result["is_evidence_sufficient"] = False
                 result["confidence"] = min(result["confidence"], 0.5)
                 if "Unresolved contradictions found between retrieved evidence items." not in result["notes"]:
-                    result["notes"] += " Unresolved contradictions found between retrieved evidence items."
-            if assessment == "INSUFFICIENT_EVIDENCE" or not supported and not contradicted:
+                    result["notes"] += (
+                        " Unresolved contradictions found between retrieved evidence items."
+                        if structured_conflict else
+                        " Opposing verified relationships did not satisfy event matching."
+                    )
+            elif supported or contradicted:
+                # Eligible, direct item relationships are the authoritative
+                # evidence-level result. A stale aggregate label or a cautious
+                # reflection LLM response must not erase them.
+                quality_is_adequate = (
+                    result["source_credibility_score"] >= LOW_AUTHORITY_THRESHOLD
+                    and result["evidence_quality_score"] >= MIN_EVIDENCE_QUALITY_THRESHOLD
+                )
+                if quality_is_adequate:
+                    result["decision"] = "YES"
+                    result["is_evidence_sufficient"] = True
+                    result["confidence"] = max(
+                        result["confidence"],
+                        max(_field(item, "confidence", 0.0) for item in relevant_items),
+                    )
+                    result["notes"] = (
+                        "Direct claim-aligned verification found supporting evidence."
+                        if supported else
+                        "Direct claim-aligned verification found contradicting evidence."
+                    )
+                else:
+                    result["decision"] = "NO"
+                    result["is_evidence_sufficient"] = False
+                    result["notes"] = (
+                        "A direct claim-aligned relationship was verified, but evidence quality "
+                        "or source credibility is below the existing reflection threshold."
+                    )
+            else:
                 result["decision"] = "NO"
                 result["is_evidence_sufficient"] = False
                 result["claim_supported"] = False

@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from urllib.parse import urljoin
 
 import requests
+from .proxy_policy import provider_proxy_overrides
 
 from .base_source import BaseExternalSource
 from .source_schema import ExternalEvidence
@@ -171,6 +172,7 @@ class IPUParlineSource(BaseExternalSource):
                 params=params,
                 headers={"Accept": "application/json", "User-Agent": "MERIDIAN/1.0 (IPU Parline provider)"},
                 timeout=self.request_timeout(),
+                proxies=provider_proxy_overrides(endpoint),
             )
             response.raise_for_status()
             payload = response.json()

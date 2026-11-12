@@ -20,6 +20,7 @@ from .crossref_source import CrossrefSource
 from .wikimedia_source import WikimediaSource
 from .world_bank_source import WorldBankSource
 from .ipu_parline_source import IPUParlineSource
+from .searxng_source import SearXNGSource
 
 __all__ = [
     "ExternalEvidence",
@@ -35,4 +36,5 @@ __all__ = [
     "WikimediaSource",
     "WorldBankSource",
     "IPUParlineSource",
+    "SearXNGSource",
 ]

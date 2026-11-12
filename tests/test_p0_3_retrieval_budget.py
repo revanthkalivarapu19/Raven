@@ -26,6 +26,7 @@ class CountingExternal:
         return ExternalResult([ExternalEvidence(
             evidence_id=f"external-{query}", title="Test", text="Text",
             url="https://example.test/shared", source="test", domain=domain,
+            metadata={"content_quality": "metadata_or_snippet"},
         )], [])
 
 
@@ -44,7 +45,19 @@ def _pipeline():
     pipeline.external_manager = CountingExternal()
     pipeline.normalizer = NormalizerFake()
     pipeline.fusion_manager = FusionFake()
-    pipeline.verification_manager = VerificationFake()
+    class InsufficientVerification:
+        def __init__(self):
+            self.calls = []
+
+        def verify(self, claim, evidence_list, **_kwargs):
+            from rag_ingestion.verification.verification_schema import OverallVerification
+            self.calls.append((claim, evidence_list))
+            return OverallVerification(
+                claim=claim, results=[], overall_assessment="INSUFFICIENT_EVIDENCE",
+                overall_confidence=0.0,
+            )
+
+    pipeline.verification_manager = InsufficientVerification()
     pipeline.web_retriever = CountingWeb()
     pipeline.minimum_sufficient_external_evidence = 2
     pipeline.max_web_fallback_urls = 1
@@ -59,6 +72,7 @@ def test_query_budget_truncates_execution_and_deduplicates():
     pipeline.process(claim="claim", domain="general", retrieval_queries=queries)
 
     assert len(pipeline.retrieval_manager.queries) == MAX_RETRIEVAL_QUERIES_PER_ATTEMPT
+    # The bounded query plan is completed so alternate wording can find direct evidence.
     assert pipeline.external_manager.queries == pipeline.retrieval_manager.queries
 
 
@@ -74,11 +88,11 @@ def test_pipeline_logs_per_query_evidence_counts_and_verifier_call(caplog):
 
     diagnostics = "\n".join(record.message for record in caplog.records)
     assert "evidence_diag query='query-one'" in diagnostics
-    assert "local_raw=1 external_normalized=1" in diagnostics
-    assert "deduped_added=2" in diagnostics
+    assert "raw_counts query='query-one' local=1 external=1" in diagnostics
+    assert "normalized=1 dropped=0" in diagnostics
     assert "fused_ranked=2" in diagnostics
     assert "final_before_verification local=1 external=1 fused=2" in diagnostics
-    assert "verifier_called=yes evidence_count=2" in diagnostics
+    assert "verifier_called=yes claim_id=C1 verification_pass_id=C1:V1 evidence_count=2" in diagnostics
     assert len(result.fused_evidence) == 2
 
 
@@ -92,7 +106,9 @@ def test_fallback_budget_is_shared_and_urls_are_deduplicated():
     )
 
     assert len(pipeline.web_retriever.urls) == 1
-    assert len(pipeline.fusion_manager.calls) == 1
+    # Local sufficiency, between-query stopping, and final fusion are recorded.
+    assert len(pipeline.fusion_manager.calls) == 4
+    # Retrieval is completed before the single bounded semantic pass.
     assert len(pipeline.verification_manager.calls) == 1
 
 

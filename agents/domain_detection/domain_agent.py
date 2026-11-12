@@ -6,9 +6,13 @@ Domain Detection Agent for the RAVEN Framework.
 
 import ollama
 import re
+import time
 from rag_ingestion.llm_resilience import LLMResilience
 
 _LLM_RESILIENCE = LLMResilience()
+# Domain classification only steers provider routing. Keep it short so a slow
+# Ollama read falls back to Unknown while retrieval keeps most of its budget.
+DOMAIN_DETECTION_TIMEOUT_SECONDS = 1.5
 from loguru import logger
 
 from .prompt import DOMAIN_PROMPT
@@ -127,6 +131,7 @@ class DomainDetectionAgent:
 
     def __init__(self, model_name: str = "qwen2.5:3b"):
         self.model_name = model_name
+        self.client = ollama.Client(timeout=DOMAIN_DETECTION_TIMEOUT_SECONDS)
 
     def build_prompt(self, claim: str) -> str:
         """
@@ -141,8 +146,10 @@ class DomainDetectionAgent:
 
         logger.info("Sending prompt to configured Ollama model...")
 
-        response = _LLM_RESILIENCE.chat(lambda: ollama.chat(
+        started = time.perf_counter()
+        response = _LLM_RESILIENCE.chat(lambda: self.client.chat(
             model=self.model_name,
+            options={"temperature": 0, "seed": 0},
             messages=[
                 {
                     "role": "user",
@@ -152,10 +159,10 @@ class DomainDetectionAgent:
         ))
 
         llm_output = response["message"]["content"]
-
-        print("\n========== RAW LLM RESPONSE ==========")
-        print(repr(llm_output))
-        print("======================================\n")
+        logger.info(
+            "performance_diag phase=domain_detection elapsed_seconds=%.4f timeout_seconds=%.1f",
+            time.perf_counter() - started, DOMAIN_DETECTION_TIMEOUT_SECONDS,
+        )
 
         return llm_output
 
@@ -163,6 +170,14 @@ class DomainDetectionAgent:
         """
         Main function for domain detection.
         """
+
+        signal_domain = _strong_domain_signal(claim)
+        if signal_domain:
+            return {
+                "domain": signal_domain,
+                "confidence": 0.65,
+                "reason": _domain_reason(signal_domain),
+            }
 
         try:
 
@@ -175,7 +190,6 @@ class DomainDetectionAgent:
             # Step 3
             parsed_response = parse_response(llm_response)
 
-            signal_domain = _strong_domain_signal(claim)
             valid_response = validate_response(parsed_response)
             if valid_response and parsed_response["domain"] in SUPPORTED_DOMAINS:
                 model_domain = parsed_response["domain"]
@@ -214,8 +228,10 @@ class DomainDetectionAgent:
             }
 
         except Exception as e:
-
-            logger.exception(e)
+            logger.warning(
+                "domain_detection fallback domain=Unknown failure_type=%s reason=%s",
+                type(e).__name__, str(e),
+            )
 
             return {
                 "domain": "Unknown",

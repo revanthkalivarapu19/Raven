@@ -16,6 +16,8 @@ Orchestrates:
 import logging
 import os
 import sys
+import threading
+import time
 from typing import Optional, Dict, Any, List
 
 from agents.input_processing.ocr import extract_ocr_data
@@ -25,9 +27,60 @@ from agents.input_processing.clean import clean_content_with_flags
 from agents.input_processing.translate import translate_with_metadata
 
 logger = logging.getLogger(__name__)
+MIN_RELIABLE_OCR_CONFIDENCE = 0.60
+OCR_TIMEOUT_SECONDS = 30.0
+_OCR_WORK_LOCK = threading.Lock()
+_OCR_WORK_IN_PROGRESS = False
 
 
-def process_input(text: Optional[str] = None, image_path: Optional[str] = None) -> Dict[str, Any]:
+def _empty_ocr_result(*flags: str) -> Dict[str, Any]:
+    return {
+        "text": "",
+        "blocks": [],
+        "average_confidence": 0.0,
+        "quality_flags": ["low_average_ocr_confidence", "low_ocr_confidence", *flags],
+    }
+
+
+def _extract_ocr_with_budget(image_path: str) -> Dict[str, Any]:
+    """Bound caller latency for OCR and avoid piling up stuck OCR workers."""
+    global _OCR_WORK_IN_PROGRESS
+    with _OCR_WORK_LOCK:
+        if _OCR_WORK_IN_PROGRESS:
+            logger.warning("OCR skipped: prior OCR worker is still running")
+            return _empty_ocr_result("ocr_timeout")
+        _OCR_WORK_IN_PROGRESS = True
+
+    completed = threading.Event()
+    result: Dict[str, Any] = {}
+
+    def run() -> None:
+        global _OCR_WORK_IN_PROGRESS
+        try:
+            result["data"] = extract_ocr_data(image_path)
+        except BaseException as exc:
+            result["error"] = exc
+        finally:
+            with _OCR_WORK_LOCK:
+                _OCR_WORK_IN_PROGRESS = False
+            completed.set()
+
+    worker = threading.Thread(target=run, name="raven-ocr", daemon=True)
+    started = time.perf_counter()
+    worker.start()
+    if not completed.wait(OCR_TIMEOUT_SECONDS):
+        logger.error("OCR profile stage=timeout budget_seconds=%.1f", OCR_TIMEOUT_SECONDS)
+        return _empty_ocr_result("ocr_timeout")
+    logger.info("OCR profile stage=budgeted_call elapsed_seconds=%.3f", time.perf_counter() - started)
+    if "error" in result:
+        raise result["error"]
+    return result["data"]
+
+
+def process_input(
+    text: Optional[str] = None,
+    image_path: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Process text and/or image inputs through the redesigned RAVEN input pipeline.
 
@@ -37,7 +90,6 @@ def process_input(text: Optional[str] = None, image_path: Optional[str] = None) 
     """
     had_text = bool(text and text.strip())
     had_image = bool(image_path)
-
     if not had_text and not had_image:
         raise ValueError("Neither text nor image was provided.")
 
@@ -97,10 +149,15 @@ def process_input(text: Optional[str] = None, image_path: Optional[str] = None) 
             raise FileNotFoundError(f"Provided image path does not exist: {image_path}")
 
         logger.info(f"Extracting OCR data from image: {image_path}")
-        ocr_data = extract_ocr_data(image_path)
+        ocr_data = _extract_ocr_with_budget(image_path)
         ocr_raw = ocr_data.get("text", "").strip()
         ocr_confidence = ocr_data.get("average_confidence", 0.0)
         quality_flags.extend(ocr_data.get("quality_flags", []))
+        if (
+            not isinstance(ocr_confidence, (int, float))
+            or ocr_confidence < MIN_RELIABLE_OCR_CONFIDENCE
+        ):
+            quality_flags.append("low_ocr_confidence")
 
         if ocr_raw:
             ocr_lang, ocr_lang_conf = detect_language_with_confidence(ocr_raw)
@@ -134,21 +191,20 @@ def process_input(text: Optional[str] = None, image_path: Optional[str] = None) 
             quality_flags.append("empty_ocr_text")
 
     # Guard: Ensure at least some text is available
-    if not any(s.get("normalized_text") for s in segments):
+    if not any(s.get("normalized_text") for s in segments) and "ocr_timeout" not in quality_flags:
         raise ValueError("No usable text was extracted from inputs.")
 
     # -------------------------------------------------------------------------
     # 3. Aggregate Metadata
     # -------------------------------------------------------------------------
-    # Aggregate Language
-    if had_text and (had_image and ocr_clean):
+    if had_text and had_image and ocr_clean:
         if user_lang == "mixed" or ocr_lang == "mixed":
             agg_lang = "mixed"
         elif user_lang != ocr_lang:
             agg_lang = "mixed"
         else:
             agg_lang = user_lang
-        agg_lang_conf = round((user_lang_conf + ocr_lang_conf) / 2.0, 3)
+        agg_lang_conf = round((user_lang_conf + ocr_lang_conf) / 2, 3)
     elif had_text:
         agg_lang = user_lang
         agg_lang_conf = user_lang_conf
@@ -165,7 +221,15 @@ def process_input(text: Optional[str] = None, image_path: Optional[str] = None) 
 
     for seg in segments:
         txt = seg.get("translated_text") or seg.get("normalized_text", "")
-        if txt:
+        low_confidence_ocr_with_text = (
+            had_text
+            and seg.get("source") == "ocr"
+            and (
+                not isinstance(ocr_confidence, (int, float))
+                or ocr_confidence < MIN_RELIABLE_OCR_CONFIDENCE
+            )
+        )
+        if txt and not low_confidence_ocr_with_text:
             claim_ready_parts.append(txt)
         raw_clean = seg.get("normalized_text", "")
         if raw_clean:

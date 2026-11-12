@@ -1,6 +1,7 @@
 import logging
 import urllib.parse
 import re
+import time
 from datetime import datetime
 from typing import List, Set, Dict, Any
 
@@ -10,6 +11,8 @@ logger = logging.getLogger(__name__)
 
 MINIMUM_CLAIM_RELEVANCE = 0.10
 MINIMUM_SEMANTIC_SIMILARITY = 0.55
+MAX_SEMANTIC_PASSAGE_CHARS = 256
+MAX_SEMANTIC_CANDIDATES = 5
 
 
 def _canonicalize_url(url: str) -> str:
@@ -54,6 +57,10 @@ class EvidenceFusionManager:
     def __init__(self) -> None:
         # No external configuration – all constants are deterministic.
         self._utm_params = {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content"}
+        self.semantic_embedder = None
+        self._semantic_query_cache: Dict[str, Any] = {}
+        self._semantic_passage_cache: Dict[tuple[str, str, str], float] = {}
+        self.last_stage_durations: Dict[str, float] = {}
 
     # ---------------------------------------------------------------------
     # Deduplication helpers
@@ -184,6 +191,8 @@ class EvidenceFusionManager:
         numeric = 1.0 if claim_values and claim_values & evidence_values else 0.0
         claim_years = {t for t in claim_tokens if re.fullmatch(r"(?:19|20)\d{2}", t)}
         evidence_years = {t for t in evidence_tokens if re.fullmatch(r"(?:19|20)\d{2}", t)}
+        if claim_years and not evidence_years and ev.publication_date:
+            evidence_years = {str(ev.publication_date.year)}
         temporal_mismatch = bool(claim_years and evidence_years and not claim_years & evidence_years)
         temporal = (
             1.0 if claim_years and claim_years & evidence_years
@@ -257,8 +266,13 @@ class EvidenceFusionManager:
 
         claim_tokens = self._claim_features(claim)
         evidence_text = f"{ev.title or ''} {ev.text or ''}"
+        # Use co-occurrence in one passage for ranking. Whole-page overlap lets
+        # broad reference pages accumulate every claim term across unrelated
+        # sections and crowd out a concise statement of the relationship.
+        lexical = self._passage_alignment_score(claim, ev)
         evidence_tokens = self._claim_features(evidence_text)
-        lexical = len(claim_tokens & evidence_tokens) / len(claim_tokens) if claim_tokens else 0.0
+        title_tokens = self._claim_features(ev.title or "")
+        title_match = 0.15 if title_tokens and title_tokens <= claim_tokens else 0.0
         claim_values = set(re.findall(r"\d+(?:\.\d+)?%?", claim or ""))
         evidence_values = set(re.findall(r"\d+(?:\.\d+)?%?", evidence_text))
         numeric = 1.0 if claim_values and claim_values & evidence_values else 0.0
@@ -269,8 +283,239 @@ class EvidenceFusionManager:
             temporal = 1.0 if claim_years & evidence_years else (-0.35 if evidence_years else 0.0)
         content_factor = 0.5 if (ev.metadata or {}).get("content_quality") == "metadata_or_snippet" else 1.0
         return content_factor * (
-            0.25 * sim + 0.25 * lexical + 0.35 * numeric + 0.10 * temporal + 0.05 * auth_norm
+            0.25 * sim + 0.25 * lexical + 0.35 * numeric + 0.10 * temporal + 0.05 * auth_norm + title_match
         )
+
+    @classmethod
+    def _passage_alignment_score(cls, claim: str, evidence: Evidence) -> float:
+        """Measure ordered claim-term alignment within one evidence sentence."""
+        stopwords = {
+            "a", "an", "and", "are", "as", "at", "be", "been", "by",
+            "did", "do", "does", "for", "from", "has", "have", "in",
+            "into", "is", "it", "of", "on", "or", "that", "the", "this",
+            "to", "was", "were", "with",
+        }
+
+        def sequence(value: str) -> list[str]:
+            result = []
+            for token in re.findall(r"[^\W_]+(?:[.%][^\W_]+)*", value.casefold()):
+                if len(token) <= 1 or token in stopwords:
+                    continue
+                for suffix in ("ingly", "edly", "ing", "ed", "es", "s"):
+                    if len(token) > len(suffix) + 3 and token.endswith(suffix):
+                        token = token[:-len(suffix)]
+                        break
+                result.append(token)
+            return result
+
+        terms = sequence(claim)
+        if not terms:
+            return 0.0
+        sentences = [
+            sentence for sentence in re.split(r"(?<=[.!?])\s+|\r?\n+", evidence.text or "")
+            if sentence.strip()
+        ]
+        if not sentences:
+            sentences = [evidence.text or ""]
+
+        def ordered_coverage(sentence: str) -> float:
+            passage_terms = sequence(sentence)
+            # Longest common subsequence rewards preserving subject/action/
+            # object order while allowing ordinary extra words in evidence.
+            row = [0] * (len(passage_terms) + 1)
+            for claim_token in terms:
+                next_row = [0]
+                for index, passage_token in enumerate(passage_terms, start=1):
+                    next_row.append(
+                        row[index - 1] + 1 if claim_token == passage_token
+                        else max(row[index], next_row[-1])
+                    )
+                row = next_row
+            return row[-1] / len(terms)
+
+        return max((ordered_coverage(sentence) for sentence in sentences), default=0.0)
+
+    @staticmethod
+    def _entity_overlap_score(claim: str, evidence: Evidence) -> float:
+        """Measure overlap of generically detected capitalized entity tokens."""
+        ignored = {"the", "a", "an", "this", "that"}
+        claim_entities = {
+            token.casefold()
+            for token in re.findall(r"\b[A-Z][a-zA-Z0-9]+\b", claim or "")
+            if token.casefold() not in ignored
+        }
+        if not claim_entities:
+            return 0.0
+        evidence_entities = {
+            token.casefold()
+            for token in re.findall(
+                r"\b[A-Z][a-zA-Z0-9]+\b", f"{evidence.title or ''} {evidence.text or ''}"
+            )
+            if token.casefold() not in ignored
+        }
+        return len(claim_entities & evidence_entities) / len(claim_entities)
+
+    @classmethod
+    def _entity_relation_alignment_score(cls, claim: str, evidence: Evidence) -> float:
+        """Find a shared claim predicate between the claim's entities in one sentence."""
+        ignored = {"the", "a", "an", "this", "that"}
+        claim_entities = [
+            token.casefold()
+            for token in re.findall(r"\b[A-Z][a-zA-Z0-9]+\b", claim or "")
+            if token.casefold() not in ignored
+        ]
+        if len(claim_entities) < 2:
+            return 0.0
+        entities = {claim_entities[0], claim_entities[-1]}
+        claim_predicates = cls._claim_features(claim) - entities
+        if not claim_predicates:
+            return 0.0
+        sentences = [
+            sentence for sentence in re.split(r"(?<=[.!?])\s+|\r?\n+", evidence.text or "")
+            if sentence.strip()
+        ]
+        best = 0.0
+        for sentence in sentences:
+            words = [token.casefold() for token in re.findall(r"[^\W_]+", sentence)]
+            positions = {
+                entity: [index for index, word in enumerate(words) if word == entity]
+                for entity in entities
+            }
+            if not all(positions.values()):
+                continue
+            left_entity, right_entity = claim_entities[0].casefold(), claim_entities[-1].casefold()
+            for left in positions[left_entity]:
+                for right in positions[right_entity]:
+                    between = words[min(left, right) + 1:max(left, right)]
+                    if claim_predicates & set(between):
+                        best = 1.0
+        return best
+
+    def _semantic_scores(self, claim: str | None, evidences: List[Evidence]) -> Dict[str, float]:
+        """Score claim/passage meaning with the already configured local embedder.
+
+        This is a ranking signal only. It does not accept or reject evidence and
+        deliberately fails open to the established deterministic ranker when
+        the embedding model is unavailable.
+        """
+        embedder = self.semantic_embedder
+        if not claim or not evidences or embedder is None:
+            return {}
+        model = getattr(embedder, "_model", None)
+        if model is None or not callable(getattr(model, "encode", None)):
+            return {}
+        try:
+            import numpy as np
+            total_started = time.perf_counter()
+            query_encode_seconds = 0.0
+            query_encode_count = 0
+            query_vector = self._semantic_query_cache.get(claim)
+            if query_vector is None:
+                query_started = time.perf_counter()
+                query_vector = np.asarray(model.encode(
+                    [claim], normalize_embeddings=True, show_progress_bar=False,
+                )[0], dtype=float)
+                query_encode_seconds = time.perf_counter() - query_started
+                query_encode_count = 1
+                self._semantic_query_cache[claim] = query_vector
+            missing = []
+            keys = {}
+            output = {}
+            for item in evidences:
+                passage = self._semantic_passage_text(claim, item)
+                key = (claim, item.evidence_id, passage)
+                keys[item.evidence_id] = key
+                if key in self._semantic_passage_cache:
+                    output[item.evidence_id] = self._semantic_passage_cache[key]
+                else:
+                    missing.append((item.evidence_id, key, passage))
+            if missing:
+                passage_started = time.perf_counter()
+                vectors = model.encode(
+                    [row[2] for row in missing],
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                )
+                passage_encode_seconds = time.perf_counter() - passage_started
+                for (evidence_id, key, _), vector in zip(missing, vectors):
+                    score = max(0.0, min(1.0, float(np.dot(query_vector, np.asarray(vector, dtype=float)))))
+                    self._semantic_passage_cache[key] = score
+                    output[evidence_id] = score
+                if len(self._semantic_passage_cache) > 512:
+                    self._semantic_passage_cache.clear()
+            else:
+                passage_encode_seconds = 0.0
+            passages = [row[2] for row in missing]
+            token_counts = self._semantic_token_counts(model, passages)
+            claim_token_count = self._semantic_token_counts(model, [claim])
+            logger.info(
+                "semantic_embedding_batch model_loaded=true model=%s candidate_count=%d "
+                "query_encode_count=%d query_encode_seconds=%.4f "
+                "passage_encode_calls=%d passage_encode_count=%d cached_passages=%d "
+                "passage_encode_seconds=%.4f total_embedding_seconds=%.4f "
+                "claim_tokens=%s passage_chars_total=%d passage_chars_max=%d passage_tokens=%s",
+                type(model).__name__, len(evidences), query_encode_count,
+                query_encode_seconds, int(bool(missing)), len(missing),
+                len(evidences) - len(missing), passage_encode_seconds,
+                time.perf_counter() - total_started,
+                claim_token_count,
+                sum(map(len, passages)), max(map(len, passages), default=0),
+                token_counts,
+            )
+            return output
+        except Exception as exc:
+            logger.info("evidence_diag semantic_rank=unavailable reason=%s", type(exc).__name__)
+            return {}
+
+    @classmethod
+    def _semantic_passage_text(cls, claim: str, evidence: Evidence) -> str:
+        """Build a bounded title-plus-passage excerpt using generic claim overlap."""
+        title = (evidence.title or "").strip()
+        body = (evidence.text or "").strip()
+        budget = max(0, MAX_SEMANTIC_PASSAGE_CHARS - len(title) - 2)
+        if not body or budget == 0:
+            return title[:MAX_SEMANTIC_PASSAGE_CHARS]
+
+        claim_terms = cls._claim_features(claim)
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+|\r?\n+", body)
+            if sentence.strip()
+        ]
+        ranked = []
+        for index, sentence in enumerate(sentences):
+            overlap = len(claim_terms & cls._claim_features(sentence))
+            if overlap:
+                alignment = cls._passage_alignment_score(
+                    claim, evidence.model_copy(update={"text": sentence}),
+                )
+                ranked.append((alignment, overlap, -index, sentence))
+        if ranked:
+            selected = sorted(ranked, key=lambda item: (-item[0], -item[1], -item[2]))[:3]
+            selected.sort(key=lambda item: -item[2])
+            body_excerpt = " ".join(sentence for _, _, _, sentence in selected)
+        else:
+            body_excerpt = body
+        body_excerpt = body_excerpt[:budget].strip()
+        return f"{title}. {body_excerpt}".strip(" .") if title else body_excerpt
+
+    @staticmethod
+    def _semantic_token_counts(model, passages: List[str]) -> List[int] | None:
+        """Return the bounded input token lengths used by the loaded BGE tokenizer."""
+        tokenizer = getattr(model, "tokenizer", None)
+        if tokenizer is None or not passages:
+            return []
+        try:
+            encoded = tokenizer(
+                passages,
+                add_special_tokens=True,
+                truncation=True,
+                max_length=getattr(model, "max_seq_length", 512),
+                padding=False,
+            )
+            return [len(tokens) for tokens in encoded.get("input_ids", [])]
+        except Exception:
+            return None
 
     # ---------------------------------------------------------------------
     # Public API
@@ -283,6 +528,7 @@ class EvidenceFusionManager:
         claim: str | None = None,
         domain: str | None = None,
         apply_minimum_relevance: bool = True,
+        semantic_ranking: bool = False,
     ) -> List[Evidence]:
         """Merge, deduplicate and rank evidence.
 
@@ -297,8 +543,10 @@ class EvidenceFusionManager:
         """
         if top_k <= 0:
             raise ValueError("top_k must be a positive integer")
+        stage_started = time.perf_counter()
         combined = list(local_evidence) + list(external_evidence)
         unique = self._deduplicate(combined)
+        dedup_seconds = time.perf_counter() - stage_started
         logger.info(
             "evidence_diag fusion_input local=%d external=%d combined=%d deduplicated=%d",
             len(local_evidence),
@@ -309,6 +557,7 @@ class EvidenceFusionManager:
         # Filter on claim relevance before selecting top-k. Similarity is taken
         # from the existing FAISS signal (when present); lexical, numeric and
         # temporal signals come from the same claim-aware fusion implementation.
+        quality_started = time.perf_counter()
         if claim and apply_minimum_relevance:
             retained = []
             for ev in unique:
@@ -324,14 +573,48 @@ class EvidenceFusionManager:
                     ev.similarity_score is not None
                     and ev.similarity_score < MINIMUM_SEMANTIC_SIMILARITY
                 )
-                if temporal_mismatch or relevance < MINIMUM_CLAIM_RELEVANCE or semantic_below_floor or (
-                    overlap < minimum_overlap and not has_exact_context
-                ):
+                claim_years = set(re.findall(r"(?:19|20)\d{2}", claim))
+                evidence_years = set(re.findall(
+                    r"(?:19|20)\d{2}", f"{ev.title or ''} {ev.text or ''}"
+                ))
+                if not evidence_years and ev.publication_date:
+                    evidence_years = {str(ev.publication_date.year)}
+                year_match = (
+                    None if not claim_years else bool(claim_years & evidence_years)
+                )
+                rejection_reasons = []
+                if temporal_mismatch:
+                    rejection_reasons.append("year_mismatch")
+                if relevance < MINIMUM_CLAIM_RELEVANCE:
+                    rejection_reasons.append("below_minimum_relevance")
+                if semantic_below_floor:
+                    rejection_reasons.append("semantic_below_floor")
+                if overlap < minimum_overlap and not has_exact_context:
+                    rejection_reasons.append("insufficient_lexical_overlap")
+                logger.info(
+                    "evidence_diag candidate stage=fusion_relevance evidence_id=%s "
+                    "source=%r semantic_similarity=%s lexical_overlap=%d/%d "
+                    "claim_years=%s evidence_years=%s year_match=%s "
+                    "composite_relevance=%.4f accepted=%s rejection_reason=%s",
+                    ev.evidence_id,
+                    ev.source,
+                    f"{ev.similarity_score:.4f}" if ev.similarity_score is not None else "missing",
+                    overlap,
+                    claim_term_count,
+                    sorted(claim_years),
+                    sorted(evidence_years),
+                    "not_applicable" if year_match is None else str(year_match).lower(),
+                    relevance,
+                    not rejection_reasons,
+                    ",".join(rejection_reasons) if rejection_reasons else "none",
+                )
+                if rejection_reasons:
                     logger.info(
                         "evidence_diag drop stage=fusion_relevance evidence_id=%s "
-                        "reason=below_minimum relevance=%.4f similarity=%s "
+                        "reason=%s relevance=%.4f similarity=%s "
                         "overlap=%d/%d threshold=%.2f semantic_floor=%.2f",
                         ev.evidence_id,
+                        ",".join(rejection_reasons),
                         relevance,
                         f"{ev.similarity_score:.4f}" if ev.similarity_score is not None else "missing",
                         overlap,
@@ -342,10 +625,34 @@ class EvidenceFusionManager:
                     continue
                 retained.append(ev)
             unique = retained
+        quality_seconds = time.perf_counter() - quality_started
 
         raw_sims = [ev.similarity_score for ev in unique]
         norm_sims = self._normalize_similarity(raw_sims)
-        scored = [(self._ranking_score(ev, ns, claim), ev) for ev, ns in zip(unique, norm_sims)]
+        semantic_started = time.perf_counter()
+        semantic_candidates = unique
+        if semantic_ranking and claim and len(unique) > MAX_SEMANTIC_CANDIDATES:
+            semantic_candidates = sorted(
+                unique,
+                key=lambda ev: self._ranking_score(ev, None, claim),
+                reverse=True,
+            )[:MAX_SEMANTIC_CANDIDATES]
+        semantic_scores = self._semantic_scores(claim, semantic_candidates) if semantic_ranking else {}
+        semantic_seconds = time.perf_counter() - semantic_started
+        rank_started = time.perf_counter()
+        scored = []
+        for ev, ns in zip(unique, norm_sims):
+            base_score = self._ranking_score(ev, ns, claim)
+            semantic_score = semantic_scores.get(ev.evidence_id)
+            # Preserve all prior ranking/quality signals, while giving a direct
+            # claim-to-passage semantic match enough influence to order external
+            # passages that have no FAISS similarity value.
+            if semantic_score is not None and claim:
+                alignment = self._passage_alignment_score(claim, ev)
+                score = 0.30 * base_score + 0.30 * semantic_score + 0.40 * alignment
+            else:
+                score = base_score
+            scored.append((score, ev))
         # Syndicated copies remain traceable, but are not treated as independent
         # confirmations. The first item from a source family keeps its score;
         # later items receive a generic diminishing factor.
@@ -353,6 +660,10 @@ class EvidenceFusionManager:
         adjusted = []
         for score, ev in sorted(scored, key=lambda item: -item[0]):
             family = (ev.metadata or {}).get("source_family")
+            if family and ev.title:
+                # Distinct articles from one publisher are separate candidates;
+                # the diminishing factor is for syndicated copies of one story.
+                family = (family, ev.title.strip().casefold())
             if family:
                 count = family_counts.get(family, 0)
                 family_counts[family] = count + 1
@@ -410,6 +721,45 @@ class EvidenceFusionManager:
             len(scored),
             len(selected),
             top_k,
+        )
+        if claim:
+            for final_score, ev in selected:
+                tokens = self._claim_features(claim)
+                evidence_tokens = self._claim_features(f"{ev.title or ''} {ev.text or ''}")
+                overlap = len(tokens & evidence_tokens)
+                claim_years = set(re.findall(r"(?:19|20)\d{2}", claim))
+                evidence_years = set(re.findall(r"(?:19|20)\d{2}", f"{ev.title or ''} {ev.text or ''}"))
+                if claim_years:
+                    temporal_score = 1.0 if claim_years & evidence_years else (-0.35 if evidence_years else 0.0)
+                else:
+                    temporal_score = 0.0
+                entity_overlap = self._entity_overlap_score(claim, ev)
+                authority = ev.authority_score
+                authority_score = max(0.0, min(authority if authority <= 1 else authority / 10, 1.0)) if authority is not None else 0.0
+                logger.info(
+                    "evidence_selection claim=%r evidence_id=%s source=%r title=%r provider=%r "
+                    "excerpt=%r lexical_score=%.4f semantic_score=%s entity_overlap=%.4f "
+                    "temporal_score=%.4f credibility_score=%.4f final_ranking_score=%.4f",
+                    claim, ev.evidence_id, ev.source, ev.title,
+                    (ev.metadata or {}).get("provider") or (ev.metadata or {}).get("external_source_type") or ev.retrieval_method,
+                    (ev.text or "")[:900], overlap / max(1, len(tokens)),
+                    f"{semantic_scores[ev.evidence_id]:.4f}" if ev.evidence_id in semantic_scores else "unavailable",
+                    entity_overlap, temporal_score,
+                    authority_score, final_score,
+                )
+        self.last_stage_durations = {
+            "deduplication": dedup_seconds,
+            "quality_filter": quality_seconds,
+            "semantic_scoring": semantic_seconds,
+            "ranking_and_selection": time.perf_counter() - rank_started,
+        }
+        logger.info(
+            "evidence_fusion_stage_durations deduplication=%.4fs quality_filter=%.4fs "
+            "semantic_scoring=%.4fs ranking_and_selection=%.4fs candidate_count=%d "
+            "filtered_count=%d ranked_count=%d selected_count=%d",
+            dedup_seconds, quality_seconds, semantic_seconds,
+            self.last_stage_durations["ranking_and_selection"], len(combined),
+            len(unique), len(scored), len(selected),
         )
         return [ev for _, ev in selected]
 

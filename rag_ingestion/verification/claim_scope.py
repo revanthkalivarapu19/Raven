@@ -58,6 +58,8 @@ def verification_can_establish_claim(result: object, claim_scope: ClaimScope) ->
     """Whether a result is scope-eligible and directly establishes its relation."""
     if isinstance(result, dict):
         direct = result.get("directly_establishes_proposition", False)
+        failed = result.get("verifier_failed", False)
     else:
         direct = getattr(result, "directly_establishes_proposition", False)
-    return direct is True and verification_is_eligible(result, claim_scope)
+        failed = getattr(result, "verifier_failed", False)
+    return failed is not True and direct is True and verification_is_eligible(result, claim_scope)

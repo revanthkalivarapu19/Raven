@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -8,123 +9,104 @@ from rag_ingestion.verification import ollama_verifier
 from rag_ingestion.verification.verification_manager import EvidenceVerificationManager
 
 
-def _evidence():
-    return Evidence(evidence_id="e1", chunk_id="c1", document_id="d1", text="Evidence text.",
-                    domain="general", source="test", language="en", metadata={})
+def _evidence(text="Evidence text."):
+    return Evidence(
+        evidence_id="e1", chunk_id="c1", document_id="d1", text=text,
+        domain="general", source="test", language="en", metadata={},
+    )
 
 
-def _valid():
-    return {
-        "relationship": "SUPPORTS", "confidence": 0.9,
-        "reasoning": "The evidence directly supports the claim.",
-        "same_event": True, "claim_aligned": True,
-        "directly_establishes_proposition": True,
-    }
+class _Response:
+    status_code = 200
+
+    def __init__(self, raw):
+        self.raw = raw
+
+    def json(self):
+        return {"response": self.raw}
 
 
 def _mock_outputs(monkeypatch, outputs):
     calls = []
     pending = iter(outputs)
 
-    class Response:
-        status_code = 200
-
-        def __init__(self, output):
-            self.output = output
-
-        def json(self):
-            return {"response": json.dumps(self.output)}
-
-    def post(_endpoint, *, json, timeout):
+    def post(endpoint, *, json, timeout):
         calls.append({"payload": json, "timeout": timeout})
-        return Response(next(pending))
+        output = next(pending)
+        if isinstance(output, dict) and "relationship" in output:
+            evidence_id = re.search(r"^\[([^\]]+)\]$", json["prompt"], re.M).group(1)
+            output = {"results": [{"evidence_id": evidence_id, **output}]}
+        return _Response(json_module.dumps(output))
 
-    monkeypatch.setattr(ollama_verifier.requests, "post", post)
+    import json as json_module
+    monkeypatch.setattr(ollama_verifier._OLLAMA_SESSION, "post", post)
     return calls
 
 
-def test_complete_response_is_accepted_with_schema_constraint(monkeypatch):
-    calls = _mock_outputs(monkeypatch, [_valid()])
-    result = ollama_verifier.verify_evidence("Claim text.", _evidence())
+def test_minimal_relationship_response_uses_small_schema_and_bounds(monkeypatch):
+    calls = _mock_outputs(monkeypatch, [{"relationship": "SUPPORTED"}])
+    direct_evidence = _evidence("The drug reduces blood pressure.")
+    result = ollama_verifier.verify_evidence("The drug reduces blood pressure.", direct_evidence)
     assert result.relationship == "SUPPORTS"
+    assert result.confidence == ollama_verifier.VERIFIER_CONFIDENCE
+    assert result.claim_aligned and result.directly_establishes_proposition
     assert len(calls) == 1
-    schema = calls[0]["payload"]["format"]
-    assert isinstance(schema, dict)
-    assert set(schema["required"]) == {
-        "relationship", "confidence", "reasoning", "same_event",
-        "claim_aligned", "directly_establishes_proposition",
-    }
-    assert schema["properties"]["same_event"]["type"] == "boolean"
-    assert schema["properties"]["claim_aligned"]["type"] == "boolean"
-    assert schema["properties"]["directly_establishes_proposition"]["type"] == "boolean"
+    payload = calls[0]["payload"]
+    assert set(payload["format"]["required"]) == {"results"}
+    assert payload["format"]["additionalProperties"] is False
+    assert payload["keep_alive"] == "10m"
+    assert payload["options"] == {"temperature": 0, "seed": 17, "num_predict": 64}
+    assert len(payload["prompt"]) < 2000
+    assert "Return only JSON" in payload["prompt"]
+    assert "do not include any other fields" in payload["prompt"].casefold()
 
 
-def test_missing_reasoning_remains_accepted_without_retry(monkeypatch):
-    result_data = _valid()
-    del result_data["reasoning"]
-    calls = _mock_outputs(monkeypatch, [result_data])
-    result = ollama_verifier.verify_evidence("Claim text.", _evidence())
-    assert result.reasoning == "No reasoning text was returned by the verifier model."
+def test_prompt_contains_claim_and_evidence_and_protects_event_scope():
+    prompt = ollama_verifier._build_prompt(
+        "The agency reduced the rate on 6 June 2025.",
+        _evidence("The agency reduced the rate on 6 June 2025."),
+    )
+    assert "CLAIM:\nThe agency reduced the rate on 6 June 2025." in prompt
+    assert "[e1]\nThe agency reduced the rate on 6 June 2025." in prompt
+    assert "directly states an incompatible fact" in prompt.casefold()
+
+
+@pytest.mark.parametrize("relationship", ["INSUFFICIENT", "unsupported", None])
+def test_invalid_or_insufficient_relationship_never_creates_binary_result(monkeypatch, relationship):
+    calls = _mock_outputs(monkeypatch, [{"relationship": relationship}])
+    item = _evidence()
+    if relationship == "INSUFFICIENT":
+        result = ollama_verifier.verify_evidence("Claim text.", item)
+        assert result.relationship == "INSUFFICIENT"
+        assert result.confidence == 0.0
+        assert not result.claim_aligned
+        assert not result.directly_establishes_proposition
+    else:
+        result = ollama_verifier.verify_evidence("Claim text.", item)
+        assert result.relationship == "INSUFFICIENT"
+        assert result.verifier_failed
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize(
-    "field", ["same_event", "claim_aligned", "directly_establishes_proposition"]
-)
-def test_missing_decision_field_gets_one_structural_repair(monkeypatch, field):
-    malformed = _valid()
-    del malformed[field]
-    calls = _mock_outputs(monkeypatch, [malformed, _valid()])
+def test_malformed_json_fails_without_semantic_retry(monkeypatch):
+    calls = _mock_outputs(monkeypatch, [])
+
+    def post(endpoint, *, json, timeout):
+        calls.append({"payload": json, "timeout": timeout})
+        return _Response('{"relationship":')
+
+    monkeypatch.setattr(ollama_verifier._OLLAMA_SESSION, "post", post)
     result = ollama_verifier.verify_evidence("Claim text.", _evidence())
-    assert getattr(result, field) is True
-    assert len(calls) == 2
-    repair = calls[1]["payload"]["prompt"]
-    assert "STRUCTURE REPAIR ONLY" in repair
-    assert "Preserve the same claim and evidence" in repair
-    assert "Do not change the semantic decision" in repair
-    assert calls[1]["payload"]["format"] == calls[0]["payload"]["format"]
+    assert result.relationship == "INSUFFICIENT"
+    assert result.verifier_failed
+    assert len(calls) == 1
 
 
-@pytest.mark.parametrize("value", ["true", "false"])
-def test_string_boolean_is_repaired_not_coerced(monkeypatch, value):
-    malformed = _valid()
-    malformed["same_event"] = value
-    calls = _mock_outputs(monkeypatch, [malformed, _valid()])
-    result = ollama_verifier.verify_evidence("Claim text.", _evidence())
-    assert result.same_event is True
-    assert len(calls) == 2
-
-
-def test_second_malformed_result_becomes_safe_verification_failure(monkeypatch):
-    malformed = _valid()
-    del malformed["directly_establishes_proposition"]
-    calls = _mock_outputs(monkeypatch, [malformed, malformed])
-
-    class Pipeline:
-        def process(self, **kwargs):
-            EvidenceVerificationManager().verify(kwargs["claim"], [_evidence()])
-
-    monkeypatch.setattr(graph, "get_claim_processing_pipeline", lambda: Pipeline())
-    state = {
-        "claim": "Claim text.", "domain": {"domain": "General"},
-        "claim_scope": "GENERAL", "errors": [],
-    }
-    failed = graph.evidence_verification_node(state)
-    assert len(calls) == 2
-    assert failed["verification_result"] is None
-    assert "directly_establishes_proposition" in failed["verification_failure"].message
-    final = graph.supervisor_node({**state, **failed})
-    assert final["supervisor_result"]["final_verdict"] == "Unverified"
-    assert final["supervisor_result"]["confidence_score"] == 0
-
-
-def test_repair_cannot_change_already_returned_semantic_decision(monkeypatch):
-    malformed = _valid()
-    del malformed["claim_aligned"]
-    changed = _valid()
-    changed["relationship"] = "CONTRADICTS"
-    calls = _mock_outputs(monkeypatch, [malformed, changed])
-    with pytest.raises(ValueError, match="changed existing decision field 'relationship'"):
-        ollama_verifier.verify_evidence("Claim text.", _evidence())
-    assert len(calls) == 2
-
+def test_malformed_verifier_output_becomes_item_level_failed_result(monkeypatch):
+    calls = _mock_outputs(monkeypatch, [{"relationship": "SUPPORTED", "extra": "unexpected"}])
+    result = EvidenceVerificationManager().verify("Claim text.", [_evidence()])
+    assert len(calls) == 1
+    assert len(result.results) == 1
+    assert result.results[0].relationship == "INSUFFICIENT"
+    assert result.results[0].verifier_failed is True
+    assert result.overall_assessment == "INSUFFICIENT_EVIDENCE"

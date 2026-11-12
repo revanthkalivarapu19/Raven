@@ -49,15 +49,15 @@ def _evidence():
 
 
 def _manager(monkeypatch):
-    def fake_verify(claim, evidence, **_kwargs):
-        return VerificationResult(
+    def fake_verify(claim, evidence_list, **_kwargs):
+        return [VerificationResult(
             evidence_id=evidence.evidence_id, claim=claim,
             relationship="CONTRADICTS", same_event=False, claim_aligned=True,
             confidence=1.0, reasoning="Controlled response.", verifier="test",
             directly_establishes_proposition=True,
-        )
+        ) for evidence in evidence_list]
 
-    monkeypatch.setattr(verification_manager, "verify_evidence", fake_verify)
+    monkeypatch.setattr(verification_manager, "verify_evidence_batch", fake_verify)
     return verification_manager.EvidenceVerificationManager()
 
 
@@ -139,7 +139,11 @@ def test_graph_extraction_keeps_explicit_override(monkeypatch):
     extracted = graph.claim_extraction_node({
         "processed_text": RBI_CLAIM, "claim_scope": "GENERAL",
     })
-    assert extracted == {"claim": RBI_CLAIM, "claim_scope": "GENERAL"}
+    assert extracted["claim"] == RBI_CLAIM
+    assert extracted["claim_scope"] == "GENERAL"
+    assert len(extracted["atomic_claims"]) == 1
+    assert extracted["atomic_claims"][0].text == RBI_CLAIM
+    assert extracted["decomposition_diagnostics"]["component_count"] == 1
 
 
 @pytest.mark.parametrize("scope", [None, ""])

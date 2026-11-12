@@ -153,7 +153,7 @@ def test_page_fetch_timeout_is_bounded_by_request_deadline():
         assert 0 < retriever.request_timeout() <= 2
 
 
-def test_page_upgrade_fetches_at_most_three_candidates():
+def test_page_upgrade_fetches_at_most_one_candidate():
     calls = []
     web = SimpleNamespace(
         retrieve=lambda url: calls.append(url)
@@ -168,4 +168,4 @@ def test_page_upgrade_fetches_at_most_three_candidates():
 
     _pipeline(web)._upgrade_metadata_snippets("rate cut", evidence)
 
-    assert len(calls) == 3
+    assert len(calls) == 1

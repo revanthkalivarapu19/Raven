@@ -156,9 +156,10 @@ def _run(monkeypatch, mode="success", decisions=None):
 
 
 def test_normal_success_reaches_end_with_output(monkeypatch):
-    result, pipeline, _ = _run(monkeypatch)
+    result, pipeline, reflection = _run(monkeypatch)
     assert result["final_output"]
     assert len(pipeline.calls) == 1
+    assert reflection.calls == 0
 
 
 @pytest.mark.parametrize("mode", ["insufficient", "conflict", "failure", "retrieval_failure"])
@@ -168,29 +169,29 @@ def test_unsafe_verification_states_reach_end_unverified(monkeypatch, mode):
     assert result["final_output"]["final_verdict"] == "Unverified"
 
 
-def test_retry_path_executes_another_attempt_and_terminates(monkeypatch):
+def test_normal_verdict_does_not_wait_for_reflection_retry(monkeypatch):
     result, pipeline, reflection = _run(
         monkeypatch, decisions=[("NO", 0.1), ("YES", 0.9)]
     )
-    assert len(pipeline.calls) == 2
-    assert reflection.calls == 2
+    assert len(pipeline.calls) == 1
+    assert reflection.calls == 0
     assert result["final_output"]
 
 
-def test_retry_exhaustion_respects_max_attempts(monkeypatch):
+def test_insufficient_verification_returns_without_optional_reflection(monkeypatch):
     result, pipeline, reflection = _run(
-        monkeypatch, decisions=[("NO", 0.1), ("NO", 0.1), ("NO", 0.1)]
+        monkeypatch, mode="insufficient", decisions=[("NO", 0.1)]
     )
-    assert len(pipeline.calls) == graph.MAX_ATTEMPTS
-    assert reflection.calls == graph.MAX_ATTEMPTS
+    assert len(pipeline.calls) == 1
+    assert reflection.calls == 0
+    assert result["supervisor_result"]["final_verdict"] == "Unverified"
     assert result["final_output"]
 
 
-def test_pipeline_boundary_and_dynamic_queries(monkeypatch):
+def test_pipeline_boundary_uses_compact_grounded_queries_without_llm_planner(monkeypatch):
     pipeline = FakePipeline()
     reflection = FakeReflection([("YES", 0.9)])
     _patch_runtime(monkeypatch, pipeline, reflection)
-    planned = ["runtime query A", "runtime query B", "runtime query C"]
     planner_calls = []
 
     def planner(**kwargs):
@@ -203,9 +204,15 @@ def test_pipeline_boundary_and_dynamic_queries(monkeypatch):
         "maximum_attempts_reached": False,
     })
 
-    assert len(planner_calls) == 1
+    assert planner_calls == []
     assert len(pipeline.calls) == 1
-    assert pipeline.calls[0]["retrieval_queries"] == planned
+    queries = pipeline.calls[0]["retrieval_queries"]
+    assert 1 <= len(queries) <= 3
+    combined = " ".join(queries).casefold()
+    assert "test authority" in combined
+    assert "0.25" in combined
+    assert "rate" in combined
+    assert all(query[-1] != "." and "?" not in query for query in queries)
     assert pipeline.calls[0]["claim"] == CLAIM
 
 

@@ -1,6 +1,7 @@
 import logging
 import ipaddress
 import socket
+import time
 from typing import Optional, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel
@@ -15,7 +16,11 @@ from requests.adapters import HTTPAdapter
 
 from rag_ingestion.crawler.robots import fetch_robots_txt_sync, is_allowed
 from rag_ingestion.extractor.html_cleaner import HTMLCleaner
-from rag_ingestion.llm_resilience import remaining_request_budget
+from rag_ingestion.llm_resilience import (
+    VERIFICATION_BUDGET_RESERVE_SECONDS,
+    remaining_request_budget,
+)
+from rag_ingestion.external_retrieval.proxy_policy import provider_proxy_overrides
 
 logger = logging.getLogger(__name__)
 MAX_REDIRECTS = 3
@@ -110,6 +115,27 @@ def _get_pinned(url: str, destination_ip: str, **kwargs):
         raise
 
 
+def _get_validated(url: str, destination_ip: str, **kwargs):
+    """Fetch a prevalidated public URL using the configured transport.
+
+    Direct connections retain DNS pinning. When Requests detects an explicit
+    environment proxy, use its normal proxy manager (with default TLS
+    verification) instead of silently bypassing that proxy. The URL is still
+    checked for a public destination before every request and redirect.
+    """
+    inherited_proxies = requests.utils.get_environ_proxies(url)
+    proxy_overrides = provider_proxy_overrides(url)
+    if not inherited_proxies or proxy_overrides == {"http": "", "https": "", "all": ""}:
+        return _get_pinned(url, destination_ip, **kwargs)
+    session = requests.Session()
+    try:
+        logger.info("evidence_diag web_transport=environment_proxy")
+        return session.get(url, proxies=proxy_overrides, **kwargs), session
+    except Exception:
+        session.close()
+        raise
+
+
 def _fetch_robots_txt_pinned(base_url: str, timeout: float, user_agent: str):
     parsed = urlsplit(base_url)
     current_url = urljoin(f"{parsed.scheme}://{parsed.netloc}", "/robots.txt")
@@ -119,7 +145,7 @@ def _fetch_robots_txt_pinned(base_url: str, timeout: float, user_agent: str):
             return None
         response = session = None
         try:
-            response, session = _get_pinned(
+            response, session = _get_validated(
                 current_url,
                 destination_ip,
                 headers={"User-Agent": user_agent},
@@ -206,7 +232,7 @@ class WebSourceRetriever:
         remaining = remaining_request_budget()
         if remaining is None:
             return configured
-        return max(0.001, min(configured, remaining))
+        return max(0.001, min(configured, remaining - VERIFICATION_BUDGET_RESERVE_SECONDS))
 
     def retrieve(self, url: str) -> WebRetrievalResult:
         result = WebRetrievalResult(url=url, retrieved_date=datetime.utcnow())
@@ -240,7 +266,7 @@ class WebSourceRetriever:
                     return result
                 response = session = None
                 try:
-                    response, session = _get_pinned(
+                    response, session = _get_validated(
                         current_url,
                         destination_ip,
                         headers=headers,
@@ -282,8 +308,13 @@ class WebSourceRetriever:
                         return result
 
                     source_metadata = {"url": result.final_url}
+                    extraction_started = time.perf_counter()
                     doc = self.html_cleaner.extract_from_content(
                         bytes(content_bytes), source_metadata
+                    )
+                    logger.info(
+                        "performance_diag phase=html_extraction elapsed_ms=%.1f",
+                        (time.perf_counter() - extraction_started) * 1000.0,
                     )
                     if doc and doc.text:
                         result.text = doc.text

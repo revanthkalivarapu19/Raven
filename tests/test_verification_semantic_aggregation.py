@@ -38,17 +38,20 @@ def _result(claim, evidence, relationship, *, aligned, same_event=False):
 def _verify(monkeypatch, claim, evidence_items, classifications, claim_scope):
     calls = iter(classifications)
 
-    def verify_evidence(claim_text, evidence, **_kwargs):
-        relationship, aligned, same_event = next(calls)
-        return _result(
-            claim_text,
-            evidence,
-            relationship,
-            aligned=aligned,
-            same_event=same_event,
-        )
+    def verify_evidence_batch(claim_text, evidence_items, **_kwargs):
+        results = []
+        for evidence in evidence_items:
+            relationship, aligned, same_event = next(calls)
+            results.append(_result(
+                claim_text,
+                evidence,
+                relationship,
+                aligned=aligned,
+                same_event=same_event,
+            ))
+        return results
 
-    monkeypatch.setattr(verification_manager, "verify_evidence", verify_evidence)
+    monkeypatch.setattr(verification_manager, "verify_evidence_batch", verify_evidence_batch)
     return verification_manager.EvidenceVerificationManager().verify(
         claim, evidence_items, claim_scope=claim_scope
     )
@@ -102,7 +105,7 @@ def test_different_event_contradiction_is_ineligible(monkeypatch):
     assert result.overall_assessment == "INSUFFICIENT_EVIDENCE"
 
 
-def test_eligible_opposing_results_remain_conflicting(monkeypatch):
+def test_first_sufficient_ranked_result_stops_verification(monkeypatch):
     claim = "The treatment reduces the measured outcome."
     evidence = [
         _evidence("support", "The treatment lowered the measured outcome."),
@@ -117,7 +120,8 @@ def test_eligible_opposing_results_remain_conflicting(monkeypatch):
         "GENERAL",
     )
 
-    assert result.overall_assessment == "CONFLICTING_EVIDENCE"
+    assert result.overall_assessment == "SUPPORTED"
+    assert len(result.results) == 1
 
 
 def test_event_specific_different_event_cannot_support_or_contradict(monkeypatch):
@@ -152,5 +156,5 @@ def test_prompt_requires_consistent_contradiction_alignment():
         _evidence("prompt", "The treatment increases the measured outcome."),
     )
 
-    assert "never return CONTRADICTS with claim_aligned=false" in prompt
-    assert "identify explicit evidence of the opposite outcome" in prompt
+    assert "SUPPORTED|CONTRADICTED|INSUFFICIENT" in prompt
+    assert "Return only JSON" in prompt

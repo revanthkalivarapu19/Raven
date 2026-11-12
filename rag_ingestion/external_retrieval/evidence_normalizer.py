@@ -1,10 +1,12 @@
 import logging
+import time
 from typing import Optional
 from urllib.parse import urlsplit
 
 from rag_ingestion.retrieval.evidence_schema import Evidence
 from rag_ingestion.external_retrieval.source_schema import ExternalEvidence
 from rag_ingestion.external_retrieval.web_retriever import WebRetrievalResult
+from rag_ingestion.evidence_quality import has_substantive_text
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,20 @@ class ExternalEvidenceNormalizer:
         min_length = self.min_fact_check_length if external_evidence.source_type == "fact_check_api" else self.min_text_length
         if len(text) < min_length:
             raise ValueError(f"Evidence text is too short (length {len(text)} < {min_length}).")
+
+        full_page_extracted = bool(web_result and web_result.text and not web_result.error)
+        metadata = external_evidence.metadata or {}
+        if metadata.get("metadata_only") and not full_page_extracted:
+            raise ValueError("Evidence is metadata-only and has no extracted source text.")
+        quality_started = time.perf_counter()
+        substantive = has_substantive_text(text)
+        logger.info(
+            "performance_diag phase=quality_filtering elapsed_ms=%.1f accepted=%s",
+            (time.perf_counter() - quality_started) * 1000.0,
+            substantive,
+        )
+        if not substantive:
+            raise ValueError("Evidence contains no substantive source text.")
 
         if not external_evidence.source or not external_evidence.source.strip():
             raise ValueError("Evidence source is missing.")

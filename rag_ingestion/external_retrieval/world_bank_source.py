@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import quote
 
 import requests
+from .proxy_policy import provider_proxy_overrides
 
 from .base_source import BaseExternalSource
 from .source_schema import ExternalEvidence
@@ -166,6 +167,7 @@ class WorldBankSource(BaseExternalSource):
                 params=params,
                 headers={"User-Agent": "MERIDIAN/1.0 (evidence retrieval)"},
                 timeout=self.request_timeout(),
+                proxies=provider_proxy_overrides(endpoint),
             )
             response.raise_for_status()
             data = response.json()

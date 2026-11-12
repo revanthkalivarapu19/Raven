@@ -18,6 +18,7 @@ from urllib.parse import quote
 import requests
 
 from .base_source import BaseExternalSource
+from .proxy_policy import provider_proxy_overrides
 from .source_schema import ExternalEvidence
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ class WikimediaSource(BaseExternalSource):
                 params=params,
                 headers={"User-Agent": "MERIDIAN/1.0 (evidence retrieval)"},
                 timeout=self.request_timeout(),
+                proxies=provider_proxy_overrides(self.base_url),
             )
             response.raise_for_status()
             data = response.json()
@@ -88,6 +90,10 @@ class WikimediaSource(BaseExternalSource):
 
         if not isinstance(data, dict):
             raise RuntimeError("Unexpected response structure from Wikimedia")
+        if data.get("error"):
+            error = data["error"]
+            code = error.get("code", "unknown") if isinstance(error, dict) else "unknown"
+            raise RuntimeError(f"Wikimedia API returned an error: {code}")
         return data
 
     @staticmethod
@@ -145,11 +151,11 @@ class WikimediaSource(BaseExternalSource):
             content_data = self._request_json({
                 "action": "query",
                 "pageids": "|".join(page_ids),
-                "prop": "extracts|info|revisions",
+                "prop": "extracts|info",
                 "explaintext": 1,
+                "exintro": 1,
+                "exlimit": len(page_ids),
                 "inprop": "url",
-                "rvprop": "ids|timestamp",
-                "rvlimit": 1,
                 "format": "json",
             })
             content_query = content_data.get("query")
@@ -205,4 +211,4 @@ class WikimediaSource(BaseExternalSource):
                 )
             )
         return results
-    supported_domains = frozenset({"general"})
+    supported_domains = frozenset({"general", "medical", "science", "finance", "political"})

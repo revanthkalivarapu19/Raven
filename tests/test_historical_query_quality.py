@@ -2,6 +2,7 @@ import ast
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -17,7 +18,7 @@ def _builder(response):
             return json.dumps(response)
 
     namespace = {"re": re, "json": json, "difflib": __import__("difflib"),
-                 "Optional": Optional, "LLMService": MockLLM,
+                 "Optional": Optional, "LLMService": MockLLM, "time": time,
                  "logger": logging.getLogger(__name__)}
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), namespace)
     return namespace["_build_retrieval_queries"]

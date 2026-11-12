@@ -1,5 +1,6 @@
 import time
-from types import SimpleNamespace
+
+import pytest
 
 from agents import graph
 from rag_ingestion.verification.verification_schema import OverallVerification
@@ -78,20 +79,19 @@ def test_insufficient_verification_is_preserved_in_budget_fallback(monkeypatch):
     assert state["supervisor_result"] is supervisor
 
 
-def test_normal_xai_success_path_is_unchanged(monkeypatch):
+def test_xai_uses_immediate_deterministic_explanation(monkeypatch):
     state, verification, supervisor = _state(time.monotonic() + 1000)
-    expected = {"final_verdict": "Unverified", "confidence": 0.0}
-    calls = []
+    expected = {"final_verdict": "Unverified", "confidence_score": 0.0}
     monkeypatch.setattr(
         graph,
         "get_xai_agent",
-        lambda: SimpleNamespace(explain=lambda **_kwargs: calls.append(True) or dict(expected)),
+        lambda: pytest.fail("XAI is explanatory only and must not block the final response"),
     )
 
     result = graph.xai_node(state)
 
-    assert calls == [True]
     assert result["final_output"]["final_verdict"] == expected["final_verdict"]
-    assert result["final_output"]["confidence"] == expected["confidence"]
+    assert result["final_output"]["confidence"] == expected["confidence_score"]
+    assert "Raven returned Unverified" in result["final_output"]["explanation"]
     assert state["verification_result"] is verification
     assert state["supervisor_result"] is supervisor

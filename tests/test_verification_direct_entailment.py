@@ -1,4 +1,4 @@
-"""Deterministic checks that topical relevance cannot establish a verdict."""
+"""Semantic verdicts remain grounded in cited evidence and generic constraints."""
 
 import json
 
@@ -6,165 +6,90 @@ import pytest
 
 from rag_ingestion.retrieval.evidence_schema import Evidence
 from rag_ingestion.verification import ollama_verifier
+from rag_ingestion.verification.directness_gate import evaluate_directness
 from rag_ingestion.verification.verification_manager import EvidenceVerificationManager
 
 
-def _evidence(text: str) -> Evidence:
-    return Evidence(
-        evidence_id="fixture", chunk_id="chunk", document_id="document",
-        text=text, domain="science", source="controlled", language="en",
-        metadata={},
-    )
+def _evidence(text):
+    return Evidence(evidence_id="e1", chunk_id="c1", document_id="d1", text=text,
+                    domain="general", source="fixture", language="en", metadata={})
 
 
-@pytest.mark.parametrize(
-    ("claim", "text", "relationship", "direct", "expected"),
-    [
-        (
-            "The drug reduces blood pressure.",
-            "A randomized trial found the drug reduced blood pressure.",
-            "SUPPORTS", True, "SUPPORTED",
-        ),
-        (
-            "The drug reduces blood pressure.",
-            "The drug is commonly prescribed for cardiovascular disease.",
-            "SUPPORTS", False, "INSUFFICIENT_EVIDENCE",
-        ),
-        (
-            "The drug reduces blood pressure.",
-            "A randomized trial found the drug did not reduce blood pressure.",
-            "CONTRADICTS", True, "CONTRADICTED",
-        ),
-        (
-            "The drug reduces inflammation.",
-            "The drug increases inflammation.",
-            "CONTRADICTS", True, "CONTRADICTED",
-        ),
-        (
-            "The treatment prevents disease progression.",
-            "The treatment accelerates disease progression.",
-            "CONTRADICTS", True, "CONTRADICTED",
-        ),
-        (
-            "Basophils counteract disease development.",
-            "Basophils amplify disease activity and promote lupus nephritis.",
-            "CONTRADICTS", True, "CONTRADICTED",
-        ),
-        (
-            "The protein suppresses inflammation.",
-            "The protein is associated with inflammation.",
-            "INSUFFICIENT", False, "INSUFFICIENT_EVIDENCE",
-        ),
-        (
-            "CX3CR1 suppresses airway inflammation.",
-            "CX3CR1 blockade prevented airway inflammation.",
-            "INSUFFICIENT", False, "INSUFFICIENT_EVIDENCE",
-        ),
-        (
-            "Bone marrow cells contribute to adult macrophage compartments.",
-            "Host macrophages retained the capacity to expand after transplantation.",
-            "SUPPORTS", False, "INSUFFICIENT_EVIDENCE",
-        ),
-        (
-            "Albendazole is used to treat lymphatic filariasis.",
-            "A review discusses lymphatic filariasis as a neglected tropical disease.",
-            "SUPPORTS", False, "INSUFFICIENT_EVIDENCE",
-        ),
-        (
-            "Aspirin inhibits production of PGE2.",
-            "COX inhibition affects PGE2 and tumor inflammation.",
-            "SUPPORTS", False, "INSUFFICIENT_EVIDENCE",
-        ),
-    ],
-)
-def test_verdict_requires_direct_propositional_evidence(
-    monkeypatch, claim, text, relationship, direct, expected,
-):
-    response = {
-        "relationship": relationship,
-        "confidence": 0.99,
-        "reasoning": "Controlled deterministic relationship classification.",
-        "directly_establishes_proposition": direct,
-        "same_event": True,
-        "claim_aligned": True,
-    }
+def _mock(monkeypatch, relationship, text, reason="The cited passage establishes this relation."):
     monkeypatch.setattr(
-        ollama_verifier._LLM_RESILIENCE,
-        "generate",
-        lambda _call: {"response": json.dumps(response)},
+        ollama_verifier._LLM_RESILIENCE, "generate", lambda call: call(),
     )
 
+    def post(_endpoint, *, json, timeout):
+        import re
+        evidence_id = re.search(r"^\[([^\]]+)\]$", json["prompt"], re.M).group(1)
+        return {"response": __import__("json").dumps({
+            "results": [{"evidence_id": evidence_id, "relationship": relationship}],
+        })}
+
+    monkeypatch.setattr(ollama_verifier._OLLAMA_SESSION, "post", post)
+
+
+@pytest.mark.parametrize(("claim", "text", "relation", "expected"), [
+    ("Smoking increases the risk of lung cancer.",
+     "Scientific studies show that smoking causes lung cancer.", "SUPPORTED", "SUPPORTS"),
+    ("Smoking increases the risk of lung cancer.",
+     "Air pollution increases the risk of lung cancer.", "INSUFFICIENT", "INSUFFICIENT"),
+    ("The Sun orbits Earth.", "The Earth orbits the Sun.", "CONTRADICTED", "CONTRADICTS"),
+    ("The Earth orbits the Sun once every year.",
+     "Earth travels around the Sun each year.", "SUPPORTED", "SUPPORTS"),
+    ("The museum opened in 2018.", "The museum was inaugurated in 2018.", "SUPPORTED", "SUPPORTS"),
+    ("The museum opened in 2018.", "The city library was inaugurated in 2018.", "INSUFFICIENT", "INSUFFICIENT"),
+    ("A spacecraft landed on Mars in 2021.", "The spacecraft reached Mars in 2021 but remained in orbit.",
+     "CONTRADICTED", "CONTRADICTS"),
+])
+def test_structured_semantic_relationship(monkeypatch, claim, text, relation, expected):
+    _mock(monkeypatch, relation, text)
+    result = EvidenceVerificationManager(timeout=1).verify(claim, [_evidence(text)])
+    assert result.results[0].relationship == expected
+    assert result.results[0].directly_establishes_proposition is (expected != "INSUFFICIENT")
+
+
+def test_quote_must_be_present_in_evidence():
+    decision = evaluate_directness("A company opened a factory.", "The company filed a permit.",
+                                   "SUPPORTS", evidence_excerpt="The company opened a factory.",
+                                   semantic_reason="Direct support")
+    assert decision.relationship == "INSUFFICIENT"
+    assert "not present" in decision.reason
+
+
+def test_amount_and_year_conflicts_block_false_support():
+    amount = evaluate_directness("The company paid a ₹20,000 fine.",
+                                 "The company paid a ₹2,000 fine.", "SUPPORTS",
+                                 evidence_excerpt="The company paid a ₹2,000 fine.",
+                                 semantic_reason="The fine is stated.")
+    year = evaluate_directness("The museum opened in 2018.",
+                               "The museum opened in 2019.", "SUPPORTS",
+                               evidence_excerpt="The museum opened in 2019.",
+                               semantic_reason="The opening is stated.")
+    assert amount.directness == year.directness == "CONSTRAINT_CONFLICT"
+    assert not amount.accepted and not year.accepted
+
+
+def test_quote_validation_tolerates_symbol_rendering_without_changing_facts():
+    evidence = "The surface reached 464 °C, making this planet the hottest in the system."
+    result = evaluate_directness("This planet is the hottest in the system.", evidence,
+                                 "SUPPORTS", evidence_excerpt="The surface reached 464 C, making this planet the hottest in the system.",
+                                 semantic_reason="The passage states the superlative directly.")
+    assert result.relationship == "SUPPORTS"
+
+
+def test_multisentence_passage_can_establish_one_claim(monkeypatch):
+    text = "The spacecraft entered orbit in March. It landed on the surface on April 4."
+    _mock(monkeypatch, "SUPPORTED", text)
     result = EvidenceVerificationManager(timeout=1).verify(
-        claim, [_evidence(text)]
-    )
-
-    assert result.results[0].relationship == relationship
-    assert result.results[0].directly_establishes_proposition is direct
-    assert result.overall_assessment == expected
-    if not direct:
-        assert result.overall_confidence == 0.0
+        "The spacecraft entered orbit and landed on April 4.", [_evidence(text)])
+    assert result.overall_assessment == "SUPPORTED"
+    assert result.results[0].direct_evidence_excerpt in text
+    assert result.results[0].direct_evidence_excerpt == text
 
 
-def test_verifier_requires_explicit_directness_field(monkeypatch):
-    response = {
-        "relationship": "SUPPORTS",
-        "confidence": 0.99,
-        "reasoning": "Mentions the same subject.",
-        "same_event": True,
-        "claim_aligned": True,
-    }
-    monkeypatch.setattr(
-        ollama_verifier._LLM_RESILIENCE,
-        "generate",
-        lambda _call: {"response": json.dumps(response)},
-    )
-
-    with pytest.raises(ValueError, match="directly_establishes_proposition"):
-        EvidenceVerificationManager(timeout=1).verify(
-            "The drug reduces blood pressure.",
-            [_evidence("The drug is commonly prescribed.")],
-        )
-
-
-def test_direct_support_and_direct_refutation_can_still_conflict(monkeypatch):
-    responses = iter([
-        {
-            "relationship": "SUPPORTS", "confidence": 0.9,
-            "reasoning": "A trial observed the claimed reduction.",
-            "directly_establishes_proposition": True,
-            "same_event": True, "claim_aligned": True,
-        },
-        {
-            "relationship": "CONTRADICTS", "confidence": 0.9,
-            "reasoning": "A trial explicitly found no reduction.",
-            "directly_establishes_proposition": True,
-            "same_event": True, "claim_aligned": True,
-        },
-    ])
-    monkeypatch.setattr(
-        ollama_verifier._LLM_RESILIENCE,
-        "generate",
-        lambda _call: {"response": json.dumps(next(responses))},
-    )
-
-    result = EvidenceVerificationManager(timeout=1).verify(
-        "The drug reduces blood pressure.",
-        [_evidence("Trial A found a reduction."), _evidence("Trial B found no reduction.")],
-    )
-
-    assert result.overall_assessment == "CONFLICTING_EVIDENCE"
-
-
-def test_prompt_distinguishes_direct_evidence_from_topical_relevance():
-    prompt = ollama_verifier._build_prompt(
-        "The drug reduces blood pressure.",
-        _evidence("The drug is commonly prescribed for cardiovascular disease."),
-    )
-
-    assert "Do not mark SUPPORTS merely because evidence discusses the same entities or subject" in prompt
-    assert "directly_establishes_proposition MUST be true only when evidence" in prompt
-    assert "Explicitly compare the direction of the claim's predicate" in prompt
-    assert "amplifying or counteracting" in prompt
-    assert "A counteracts disease development" in prompt
-    assert "A medicine treats disease B" in prompt
-    assert "Do not set claim_aligned=false merely because the evidence's direction opposes the claim" in prompt
+def test_prompt_uses_minimal_relationship_contract():
+    prompt = ollama_verifier._build_prompt("The museum opened in 2018.", _evidence("The museum was inaugurated in 2018."))
+    assert "directly states or unambiguously entails" in prompt
+    assert "Do not include any other fields" in prompt

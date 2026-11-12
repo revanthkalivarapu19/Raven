@@ -94,7 +94,13 @@ class RetrievalManager:
         """
         norm_domain = canonical_domain(domain)
         # Validate that the domain index exists – ``load_faiss_store`` will raise if missing
-        _ = self.storage_manager.load_faiss_store(norm_domain)
+        index, _ = self.storage_manager.load_faiss_store(norm_domain)
+        logger.info(
+            "evidence_diag faiss_selected domain=%s index_path=%s vector_count=%d",
+            norm_domain,
+            self.storage_manager._faiss_dir(norm_domain) / "index.faiss",
+            index.ntotal,
+        )
 
         # Perform the search – returns list of (chunk_id, score)
         results: List[Tuple[str, float]] = self.query_service.run_query(claim, norm_domain, top_k)

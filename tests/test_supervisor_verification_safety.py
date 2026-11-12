@@ -85,16 +85,53 @@ def test_conflicting_evidence_is_unverified():
     assert result["supervisor_result"]["trust_score"] == 0
 
 
-def test_successful_verification_reaches_supervisor():
+def test_supported_verification_maps_to_real_without_waiting_for_supervisor():
     namespace = _load_supervisor_node()
     calls = []
-    namespace["get_supervisor_agent"] = lambda: lambda value: (
-        calls.append(value) or {"final_verdict": "Real"}
-    )
+    namespace["get_supervisor_agent"] = lambda: lambda value: calls.append(value)
 
     result = namespace["supervisor_node"](
-        _state({"overall_assessment": "SUPPORTED"})
+        _state({
+            "overall_assessment": "SUPPORTED", "overall_confidence": 0.91,
+            "results": [{"evidence_id": "support-1", "relationship": "SUPPORTS",
+                         "claim_aligned": True, "directly_establishes_proposition": True,
+                         "same_event": True, "confidence": 0.91}],
+        })
     )
 
     assert result["supervisor_result"]["final_verdict"] == "Real"
-    assert len(calls) == 1
+    assert result["supervisor_result"]["confidence_score"] == 91
+    assert result["supervisor_result"]["key_evidence_used"] == ["support-1"]
+    assert calls == []
+
+
+def test_contradicting_verification_maps_to_fake_without_waiting_for_supervisor():
+    namespace = _load_supervisor_node()
+    namespace["get_supervisor_agent"] = lambda: _unexpected_call
+
+    result = namespace["supervisor_node"](
+        _state({
+            "overall_assessment": "CONTRADICTED", "overall_confidence": 1.0,
+            "results": [{"evidence_id": "contra-1", "relationship": "CONTRADICTS",
+                         "claim_aligned": True, "directly_establishes_proposition": True,
+                         "same_event": True, "confidence": 1.0}],
+        })
+    )
+
+    assert result["supervisor_result"]["final_verdict"] == "Fake"
+    assert result["supervisor_result"]["confidence_score"] == 100
+
+
+def test_unsupported_or_ineligible_verification_stays_unverified():
+    namespace = _load_supervisor_node()
+    namespace["get_supervisor_agent"] = lambda: _unexpected_call
+
+    for assessment, relationship in (("SUPPORTED", "SUPPORTS"), ("CONTRADICTED", "CONTRADICTS")):
+        result = namespace["supervisor_node"](
+            _state({"overall_assessment": assessment, "overall_confidence": 1.0,
+                    "results": [{"evidence_id": "unclear", "relationship": relationship,
+                                 "claim_aligned": False,
+                                 "directly_establishes_proposition": False,
+                                 "same_event": True, "confidence": 1.0}]})
+        )
+        assert result["supervisor_result"]["final_verdict"] == "Unverified"

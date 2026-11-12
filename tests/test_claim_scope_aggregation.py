@@ -35,7 +35,12 @@ def _verify(monkeypatch, claim, scope, fields):
             reasoning="Controlled result.", verifier="test",
         )
 
-    monkeypatch.setattr(verification_manager, "verify_evidence", fake_verify)
+    monkeypatch.setattr(
+        verification_manager, "verify_evidence_batch",
+        lambda claim_text, items, **kwargs: [
+            fake_verify(claim_text, item, **kwargs) for item in items
+        ],
+    )
     return verification_manager.EvidenceVerificationManager().verify(
         claim, [_evidence(i) for i in range(len(fields))], claim_scope=scope,
     )
@@ -79,12 +84,13 @@ def test_different_event_contradiction_does_not_conflict(monkeypatch):
     assert result.overall_confidence == 0.9
 
 
-def test_same_event_opposing_results_still_conflict(monkeypatch):
+def test_first_sufficient_ranked_item_stops_additional_verification(monkeypatch):
     result = _verify(monkeypatch, RBI_CLAIM, "EVENT_SPECIFIC", [
         ("SUPPORTS", True, True, 0.9),
         ("CONTRADICTS", True, True, 1.0),
     ])
-    assert result.overall_assessment == "CONFLICTING_EVIDENCE"
+    assert result.overall_assessment == "SUPPORTED"
+    assert len(result.results) == 1
 
 
 def test_recorded_rbi_five_item_flags_are_insufficient(monkeypatch):
@@ -114,14 +120,14 @@ def test_scope_classification_handles_undated_decision_and_general_proposition()
 
 def test_verification_manager_classifies_scope_when_not_supplied(monkeypatch):
     monkeypatch.setattr(
-        verification_manager, "verify_evidence",
-        lambda claim, evidence, **_kwargs: VerificationResult(
+        verification_manager, "verify_evidence_batch",
+        lambda claim, evidence_items, **_kwargs: [VerificationResult(
             evidence_id=evidence.evidence_id, claim=claim,
             relationship="CONTRADICTS", same_event=False,
             claim_aligned=True, confidence=1.0,
             directly_establishes_proposition=True,
             reasoning="Controlled result.", verifier="test",
-        ),
+        ) for evidence in evidence_items],
     )
     result = verification_manager.EvidenceVerificationManager().verify(
         RBI_CLAIM, [_evidence(0)],
@@ -136,7 +142,10 @@ def test_extraction_node_records_scope_with_claim(monkeypatch):
         lambda: type("Agent", (), {"extract_claim": lambda self, text: RBI_CLAIM})(),
     )
     extracted = graph.claim_extraction_node({"processed_text": RBI_CLAIM})
-    assert extracted == {"claim": RBI_CLAIM, "claim_scope": "EVENT_SPECIFIC"}
+    assert extracted["claim"] == RBI_CLAIM
+    assert extracted["claim_scope"] == "EVENT_SPECIFIC"
+    assert len(extracted["atomic_claims"]) == 1
+    assert extracted["atomic_claims"][0].id == "C1"
 
 
 @pytest.mark.parametrize(

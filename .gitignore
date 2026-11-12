@@ -9,3 +9,9 @@ venv/
 
 # Runtime logs
 logs/
+
+# Local benchmark outputs and diagnostic data
+results/
+data/*_benchmark.csv
+data/*_benchmark.json
+data/verifier_diagnostic_6.csv

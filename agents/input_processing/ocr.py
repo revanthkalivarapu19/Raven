@@ -12,11 +12,14 @@ Strengthened OCR processing with:
 
 import logging
 import os
+import time
 from typing import Dict, Any, List, Optional, Tuple
 import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+OCR_MAX_LONG_EDGE = 900
 
 # Lazy singleton for reader to avoid load overhead on import
 _READER = None
@@ -28,11 +31,13 @@ def get_ocr_reader():
     """
     global _READER
     if _READER is None:
+        started = time.perf_counter()
         import easyocr
         import torch
         use_gpu = torch.cuda.is_available()
         logger.info(f"Initializing EasyOCR reader (GPU={use_gpu}, languages=['en', 'te'])...")
         _READER = easyocr.Reader(['en', 'te'], gpu=use_gpu)
+        logger.info("OCR profile stage=reader_init elapsed_seconds=%.3f", time.perf_counter() - started)
     return _READER
 
 
@@ -93,6 +98,18 @@ def preprocess_image(image_input) -> np.ndarray:
     else:
         raise TypeError(f"Unsupported image input type: {type(image_input)}")
 
+    # Cap image dimensions before costly transforms. OCR does not benefit from
+    # processing full-resolution screenshots once text is already legible.
+    h, w = img.shape[:2]
+    max_dimension = OCR_MAX_LONG_EDGE
+    if max(h, w) > max_dimension:
+        scale = max_dimension / max(h, w)
+        img = cv2.resize(
+            img,
+            (max(1, int(w * scale)), max(1, int(h * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+
     # Convert to grayscale if needed
     if len(img.shape) == 3:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -104,7 +121,7 @@ def preprocess_image(image_input) -> np.ndarray:
     # Adaptive scaling:
     # Small screenshots benefit from 1.5x - 2.0x upscale
     # Oversized photos should be capped to prevent CPU/memory bottlenecks
-    if h < 600 or w < 600:
+    if max(h, w) < 600:
         fx = fy = 1.75
         gray = cv2.resize(gray, None, fx=fx, fy=fy, interpolation=cv2.INTER_CUBIC)
     elif h > 2200 or w > 2200:
@@ -204,9 +221,27 @@ def extract_ocr_data(image_path: str) -> Dict[str, Any]:
     - per-block text, confidence, bounding boxes, and reading order
     - average confidence and quality flags
     """
+    started = time.perf_counter()
     reader = get_ocr_reader()
+    reader_ready = time.perf_counter()
+    logger.info("OCR profile stage=reader_ready elapsed_seconds=%.3f", reader_ready - started)
     preprocessed = preprocess_image(image_path)
-    raw_results = reader.readtext(preprocessed)
+    preprocessed_at = time.perf_counter()
+    logger.info(
+        "OCR profile stage=preprocess_complete dimensions=%sx%s elapsed_seconds=%.3f",
+        preprocessed.shape[1], preprocessed.shape[0], preprocessed_at - reader_ready,
+    )
+    raw_results = reader.readtext(
+        preprocessed, detail=1, paragraph=False, canvas_size=OCR_MAX_LONG_EDGE, mag_ratio=1.0,
+    )
+    completed_at = time.perf_counter()
+    logger.info(
+        "OCR profile stage=extract dimensions=%sx%s reader_wait_seconds=%.3f "
+        "preprocess_seconds=%.3f inference_seconds=%.3f total_seconds=%.3f",
+        preprocessed.shape[1], preprocessed.shape[0], reader_ready - started,
+        preprocessed_at - reader_ready, completed_at - preprocessed_at,
+        completed_at - started,
+    )
 
     ordered_blocks = sort_reading_order(raw_results)
 

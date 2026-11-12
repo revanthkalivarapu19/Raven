@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import requests
+from .proxy_policy import provider_proxy_overrides
 
 from .base_source import BaseExternalSource
 from .source_schema import ExternalEvidence
@@ -234,6 +235,7 @@ class EuropePMCSource(BaseExternalSource):
                 params=params,
                 headers={"User-Agent": "MERIDIAN/1.0 (evidence retrieval)"},
                 timeout=self.request_timeout(),
+                proxies=provider_proxy_overrides(self.base_url),
             )
             response.raise_for_status()
             data = response.json()

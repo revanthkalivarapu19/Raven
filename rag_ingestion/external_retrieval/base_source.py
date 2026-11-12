@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import os
 from typing import List, Optional, FrozenSet
 
 from .source_schema import ExternalEvidence
-from rag_ingestion.llm_resilience import remaining_request_budget
+from rag_ingestion.llm_resilience import (
+    VERIFICATION_BUDGET_RESERVE_SECONDS,
+    remaining_request_budget,
+)
 
 
 class BaseExternalSource(ABC):
@@ -29,10 +33,17 @@ class BaseExternalSource(ABC):
     def request_timeout(self) -> float:
         """Return this provider's timeout bounded by the active request deadline."""
         configured = float(getattr(self, "timeout", 30.0))
+        global_timeout = os.getenv("TIMEOUT_SECONDS", "").strip()
+        if global_timeout:
+            try:
+                configured = min(configured, max(0.001, float(global_timeout)))
+            except ValueError:
+                pass
         remaining = remaining_request_budget()
         if remaining is None:
             return configured
-        return max(0.001, min(configured, remaining))
+        provider_budget = max(0.001, remaining - VERIFICATION_BUDGET_RESERVE_SECONDS)
+        return max(0.001, min(configured, provider_budget))
 
     @abstractmethod
     def search(

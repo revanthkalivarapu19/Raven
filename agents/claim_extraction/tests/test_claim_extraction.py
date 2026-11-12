@@ -1,10 +1,18 @@
+import os
+import time
+
+import httpx
 import pytest
 
-from agents.claim_extraction.claim_extraction_agent import ClaimExtractionAgent
+from agents.claim_extraction.claim_extraction_agent import (
+    ClaimExtractionAgent,
+    ClaimExtractionFidelityError,
+)
 from agents.claim_extraction.services.llm_service import LLMService
+from rag_ingestion.llm_resilience import LLMInvocationError, request_deadline
 
 
-def test_rbi_repeated_claim():
+def test_rbi_repeated_claim(monkeypatch):
 
     agent = ClaimExtractionAgent()
 
@@ -16,16 +24,37 @@ def test_rbi_repeated_claim():
     and maintain economic stability.
     """
 
+    agent.llm.generate = lambda _prompt: (
+        "The RBI raised the repo rate to 6.5 percent. The central bank increased "
+        "interest rates to 6.5 percent. India's repo rate now stands at 6.5 percent. "
+        "The decision was taken as part of the central bank's monetary policy "
+        "measures to control inflation and maintain economic stability."
+    )
+
     claim = agent.extract_claim(text)
 
-    print("\nInput:")
-    print(text)
-
-    print("\nExtracted Claim:")
-    print(claim)
-
-    assert claim != ""
+    assert claim
+    assert "repo rate" in claim
+    assert "6.5 percent" in claim
     assert len(claim) < len(text) / 2
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    os.getenv("RAVEN_RUN_LIVE_LLM_TESTS") != "1",
+    reason="set RAVEN_RUN_LIVE_LLM_TESTS=1 to run the live Ollama smoke check",
+)
+def test_rbi_repeated_claim_live():
+    agent = ClaimExtractionAgent()
+    text = (
+        "The RBI raised the repo rate to 6.5 percent. The central bank increased "
+        "interest rates to 6.5 percent. India's repo rate now stands at 6.5 percent. "
+        "The decision was taken as part of the central bank's monetary policy "
+        "measures to control inflation and maintain economic stability."
+    )
+    claim = agent.extract_claim(text)
+    assert claim
+    assert len(claim.split()) <= 30
 
 
 def test_long_paragraph():
@@ -105,6 +134,14 @@ def test_empty_input():
     assert claim == ""
 
 
+def test_concise_single_fact_skips_llm_and_preserves_source():
+    agent = ClaimExtractionAgent()
+    text = "Israeli President Isaac Herzog tasked Gadi Eisenkot with forming a government."
+    agent.llm.generate = lambda _prompt: pytest.fail("LLM should not be called")
+
+    assert agent.extract_claim(text) == text
+
+
 def _agent_with_response(response):
     agent = ClaimExtractionAgent()
     agent.llm.generate = lambda _prompt: response
@@ -181,12 +218,18 @@ def test_system_prompt_requires_exact_named_entity_preservation(monkeypatch):
     service = LLMService()
     captured = {}
 
-    def fake_chat(**kwargs):
-        captured["messages"] = kwargs["messages"]
-        return {"message": {"content": "A concise factual claim."}}
+    class FakeClient:
+        def __init__(self, *, timeout):
+            captured["timeout"] = timeout
 
-    monkeypatch.setattr(service._resilience, "chat", lambda call: call())
-    monkeypatch.setattr("agents.claim_extraction.services.llm_service.ollama.chat", fake_chat)
+        def chat(self, **kwargs):
+            captured["messages"] = kwargs["messages"]
+            return {"message": {"content": "A concise factual claim."}}
+
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr("agents.claim_extraction.services.llm_service.ollama.Client", FakeClient)
 
     service.generate("A source paragraph.")
 
@@ -210,6 +253,8 @@ def test_system_prompt_requires_exact_named_entity_preservation(monkeypatch):
     assert "\"on Friday\"" in system_prompt
     assert "Do not omit, weaken, or generalize these expressions" in system_prompt
     assert "use more words when necessary" in system_prompt
+    assert captured["timeout"] <= 20
+    assert captured["closed"] is True
 
 
 def test_request_prompt_preserves_explicit_multi_entity_lists():
@@ -241,3 +286,58 @@ def test_clean_claim_normalizes_curly_apostrophes():
     )
 
     assert claim == "Dr. Reddy's and Nestle Health Science received notices."
+
+
+def test_claim_model_timeout_uses_bounded_http_client_without_detached_worker(monkeypatch):
+    captured = {"calls": 0, "closed": False}
+
+    class SlowClient:
+        def __init__(self, *, timeout):
+            captured["timeout"] = timeout
+
+        def chat(self, **_kwargs):
+            captured["calls"] += 1
+            raise httpx.ReadTimeout("timed out")
+
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr("agents.claim_extraction.services.llm_service.ollama.Client", SlowClient)
+    service = LLMService()
+    with request_deadline(time.monotonic() + 0.25):
+        with pytest.raises(LLMInvocationError) as error:
+            service.generate("Extract a claim.")
+
+    assert error.value.kind == "timeout", repr(error.value.__cause__)
+    assert captured["calls"] == 1
+    assert 0 < captured["timeout"] <= 0.25
+    assert captured["closed"] is True
+
+
+def test_claim_extraction_timeout_uses_validated_short_source_fallback(caplog):
+    source = "A detailed background paragraph " + " ".join(["with detail"] * 16) + ". The Earth orbits the Sun."
+    agent = ClaimExtractionAgent()
+    calls = []
+
+    def timeout(_prompt):
+        calls.append("generate")
+        raise LLMInvocationError("model read timed out", "timeout")
+
+    agent.llm.generate = timeout
+    with caplog.at_level("INFO", logger="agents.claim_extraction.claim_extraction_agent"):
+        claim = agent.extract_claim(source)
+
+    assert claim == "The Earth orbits the Sun."
+    assert calls == ["generate"]
+    assert "retries=0 fallback=True" in caplog.text
+
+
+def test_claim_extraction_timeout_without_concise_fallback_fails_closed():
+    source = " ".join(["A", *(["detailed"] * 34), "claim."])
+    agent = ClaimExtractionAgent()
+    agent.llm.generate = lambda _prompt: (_ for _ in ()).throw(
+        LLMInvocationError("model read timed out", "timeout")
+    )
+
+    with pytest.raises(ClaimExtractionFidelityError, match="no concise source-grounded fallback"):
+        agent.extract_claim(source)

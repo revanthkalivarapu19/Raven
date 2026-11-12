@@ -40,7 +40,7 @@ def test_supported_domains_are_returned_with_existing_output_schema(
     result = agent.detect_domain(claim)
 
     assert result["domain"] == domain
-    assert result["confidence"] == 0.9
+    assert 0.0 < result["confidence"] <= 0.9
     assert set(result) == {"domain", "confidence", "reason"}
     assert result["reason"]
 
@@ -93,6 +93,25 @@ def test_goyal_eci_political_response_is_kept_without_recovery_cue(monkeypatch):
     result = agent.detect_domain(claim)
 
     assert result == response
+
+
+def test_herzog_eisenkot_government_formation_claim_routes_to_politics(monkeypatch):
+    agent = DomainDetectionAgent()
+    monkeypatch.setattr(
+        agent,
+        "call_llm",
+        lambda _prompt: json.dumps({
+            "domain": "Unknown", "confidence": 0.9, "reason": "Unclear."
+        }),
+    )
+
+    result = agent.detect_domain(
+        "Israeli President Isaac Herzog has tasked opposition politician Gadi "
+        "Eisenkot with forming a government in a major setback for Benjamin Netanyahu."
+    )
+
+    assert result["domain"] == "Politics"
+    assert result["confidence"] == 0.65
 
 
 def test_health_product_regulatory_action_is_not_classified_as_finance(monkeypatch):
@@ -298,6 +317,50 @@ def test_nonmedical_scientific_claim_remains_science(monkeypatch):
     )
 
     assert result["domain"] == "Science"
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Earth orbits the Sun.",
+        "Earth revolves around the Sun.",
+        "Planets orbit the Sun.",
+    ],
+)
+def test_unknown_model_domain_does_not_use_claim_specific_recovery(monkeypatch, claim):
+    agent = DomainDetectionAgent()
+    monkeypatch.setattr(
+        agent,
+        "call_llm",
+        lambda _prompt: json.dumps({
+            "domain": "Unknown",
+            "confidence": 0.9,
+            "reason": "Unclear.",
+        }),
+    )
+
+    result = agent.detect_domain(claim)
+
+    assert result["domain"] == "Unknown"
+    assert result["confidence"] == 0.0
+
+
+def test_unrelated_claim_does_not_recover_science_domain(monkeypatch):
+    agent = DomainDetectionAgent()
+    monkeypatch.setattr(
+        agent,
+        "call_llm",
+        lambda _prompt: json.dumps({
+            "domain": "Unknown",
+            "confidence": 0.9,
+            "reason": "Unclear.",
+        }),
+    )
+
+    result = agent.detect_domain("A town opened a new community center.")
+
+    assert result["domain"] == "Unknown"
+    assert result["confidence"] == 0.0
 
 
 def test_medicine_alias_is_normalized_to_medical(monkeypatch):

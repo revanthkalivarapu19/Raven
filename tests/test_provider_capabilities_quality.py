@@ -5,6 +5,7 @@ from rag_ingestion.external_retrieval.source_schema import ExternalEvidence
 from rag_ingestion.external_retrieval.evidence_normalizer import ExternalEvidenceNormalizer
 from rag_ingestion.retrieval.evidence_fusion import EvidenceFusionManager
 from rag_ingestion.retrieval.evidence_schema import Evidence
+import pytest
 
 
 class DummySource(BaseExternalSource):
@@ -23,14 +24,28 @@ def test_capability_metadata_distinguishes_fetch_only_web_retriever():
     assert DummySource.supports_historical is False
 
 
-def test_metadata_only_evidence_is_marked_and_penalized():
+def test_metadata_only_evidence_is_rejected():
     external = ExternalEvidence(
         evidence_id="metadata", text="Bibliographic metadata only; no article body.",
         source="Crossref", title="Study", url="https://doi.org/10/x", domain="science",
         source_type="scientific_literature", metadata={"text_limitation": "metadata only"},
     )
-    normalized = ExternalEvidenceNormalizer(min_text_length=10).normalize(external)
-    assert normalized.metadata["content_quality"] == "metadata_or_snippet"
+    with pytest.raises(ValueError, match="substantive|metadata-only"):
+        ExternalEvidenceNormalizer(min_text_length=10).normalize(external)
+
+
+@pytest.mark.parametrize("text", [
+    "Skip to main content Subscribe Log In " * 5,
+    "Bibliographic record only. No abstract or article body available.",
+])
+def test_boilerplate_or_bibliographic_only_external_text_is_rejected(text):
+    external = ExternalEvidence(
+        evidence_id="metadata-only", text=text, source="Example Publisher",
+        title="Example", url="https://example.org/article", domain="general",
+        source_type="news_article", metadata={"metadata_only": True},
+    )
+    with pytest.raises(ValueError):
+        ExternalEvidenceNormalizer(min_text_length=10).normalize(external)
 
 
 def test_source_family_diminishes_syndicated_copies():

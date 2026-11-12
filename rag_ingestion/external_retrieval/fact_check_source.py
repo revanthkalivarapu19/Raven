@@ -6,6 +6,7 @@ from datetime import datetime
 import requests
 
 from .base_source import BaseExternalSource
+from .proxy_policy import provider_proxy_overrides
 from .source_schema import ExternalEvidence
 
 logger = logging.getLogger(__name__)
@@ -16,9 +17,10 @@ class FactCheckSource(BaseExternalSource):
     requires_authentication = True
     """Concrete external source for the Google Fact Check Tools API."""
 
-    def __init__(self, timeout: int = 15) -> None:
+    def __init__(self, timeout: int = 4) -> None:
         self.name = "fact_check"
-        self.timeout = timeout
+        self.timeout = min(float(timeout), 4.0)
+        self.last_http_status = None
         self.base_url = "https://factchecktools.googleapis.com/v1alpha1/claims:search"
 
     def search(
@@ -47,7 +49,11 @@ class FactCheckSource(BaseExternalSource):
             params["languageCode"] = language.strip()
 
         try:
-            response = requests.get(self.base_url, params=params, timeout=self.request_timeout())
+            response = requests.get(
+                self.base_url, params=params, timeout=self.request_timeout(),
+                proxies=provider_proxy_overrides(self.base_url),
+            )
+            self.last_http_status = response.status_code
             response.raise_for_status()
             data = response.json()
         except requests.exceptions.Timeout as e:
